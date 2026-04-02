@@ -1,0 +1,9 @@
+{
+  "name": "distill-me",
+  "version": "1.0.0",
+  "description": "Personal digital persona system with hierarchical memory and online learning",
+  "type": "module",
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  }
+}
