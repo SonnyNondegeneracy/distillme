@@ -1,361 +1,288 @@
 ---
-name: distill-mentor
-description: "Distill academic mentors into AI Skills. Auto-collect papers, analyze research style, and generate conversational mentor skills. | 蒸馏学术导师的数字分身，自动收集论文、分析研究风格，生成可对话的导师 skill。"
-argument-hint: "<mentor-name> [--affiliation <institution>]"
-version: "1.1.0"
+name: distill-me
+description: "DistillMe — 从个人数据中蒸馏出立体的、有记忆的、会持续学习的数字分身。/ Distill your digital persona from personal data with memory and continuous learning."
+argument-hint: "create|chat|list|update \"<name>\" [--data-folder <path>]"
+version: "1.0.0"
 user-invocable: true
-allowed-tools: Read, Write, Edit, Bash
+allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent
 ---
 
-> **Language / 语言**: This skill supports both English and Chinese. Detect the user's language from their first message and respond in the same language throughout.
->
-> 本 Skill 支持中英文。根据用户第一条消息的语言，全程使用同一语言回复。
+# DistillMe — 蒸馏你的数字分身 / Distill Your Digital Persona
 
-# Academic Mentor Distillation System / 导师蒸馏系统
-
-Automatically collect academic mentor information and generate conversational digital mentor skills.
-
-自动收集学术导师信息并生成可对话的数字导师 skill。
+> 从个人数据中蒸馏出立体的、有记忆的、会持续学习的数字分身。
 
 ## 触发条件 / Trigger Conditions
 
-Activate when the user says:
-- `/distill-mentor <name>` or `/distill-mentor <name> --affiliation <institution>`
-- "帮我生成 <导师名> 的 skill"
-- "蒸馏 <导师名>"
-- "Create mentor skill for <name>"
+- `/distill-me create "<name>" --data-folder <path>` — 从数据文件夹创建数字分身
+- `/distill-me create "<name>"` — 无数据文件夹，通过问答创建
+- `/distill-me chat "<name>"` — 与已有数字分身对话
+- `/distill-me list` — 列出所有数字分身
+- `/distill-me update "<name>" --data-folder <path>` — 追加数据更新记忆
+- "创建数字分身" / "Create digital persona" / "Distill me"
 
-## 🆕 Deep Analysis Features (v1.1.0)
+## 语言 / Language
 
-### Enhanced Paper Analysis
+支持中英文。根据用户首条消息语言全程保持一致。
 
-The system now performs **deep analysis** of mentor's papers to extract:
+## 创建工作流 / Creation Workflow
 
-**Research Interests & Preferences**:
-- Core research themes and evolution over time
-- Problem type preferences (theoretical vs practical)
-- Innovation style (groundbreaking vs incremental)
-- Emerging research directions
+### 命令格式
 
-**Research Methodology**:
-- Experimental design patterns
-- Dataset preferences and benchmarks used
-- Ablation study approaches
-- Evaluation metrics prioritized
+```
+/distill-me create "小明" --data-folder /path/to/data
+```
 
-**Visualization & Presentation**:
-- Chart and figure preferences
-- Visual style (minimalist vs detailed)
-- Result presentation patterns
-- Typical visualization techniques
-
-**Writing Style**:
-- Title patterns and structure
-- Abstract organization
-- Technical depth in body text
-- Paragraph and transition patterns
-
-**Research Thinking**:
-- Innovation sources (theory/data/application-driven)
-- Problem-solving approaches
-- Typical research workflows
-- Reasoning patterns
-
-**Academic Values**:
-- Attitudes toward simplicity, practicality, rigor
-- Open-source and code-sharing stance
-- Community engagement level
-
-**Paper Organization**:
-- Typical paper structure
-- Section length preferences
-- Method presentation style (formulas/pseudocode/text)
-- Experiments section proportion
-
-### Public Information Analysis
-
-The system also analyzes **publicly available information**:
-
-**Personality Traits**:
-- Openness, conscientiousness, extraversion
-- Communication and decision-making style
-- Work-life balance patterns
-
-**Communication Style**:
-- Speaking style (from talks, interviews)
-- Writing style (from blogs, social media)
-- Humor, formality, interaction levels
-
-**Academic Philosophy**:
-- Research purpose and standards
-- Teaching philosophy and mentorship style
-- Views on field trends and future
-
-**Social & Interpersonal**:
-- Collaboration preferences
-- Student-mentor relationship style
-- Community service involvement
-
-**Values & Beliefs**:
-- Career priorities
-- Success definition
-- Social and ethical stances
-
-**Personal Interests**:
-- Hobbies outside academia
-- Work-life integration
-- Lifestyle preferences
-
-### How to Use Deep Analysis
+### Step 1: 数据扫描
 
 ```bash
-# Run deep analysis
-node tools/deep-analyzer.mjs "<name>" --affiliation "<institution>"
-
-# Search for public information
-node tools/news-search.mjs "<name>" --affiliation "<institution>"
-
-# Results saved to:
-# reports/<name>_deep_analysis.json
-# reports/<name>_news_search.json
+node ${CLAUDE_SKILL_DIR}/tools/ingest.mjs scan "<data-folder>"
 ```
 
-The analysis uses the prompts in:
-- `prompts/deep-paper-analyzer.md` - For paper analysis
-- `prompts/public-info-analyzer.md` - For public info analysis
+显示文件统计（文本、JSON、CSV、图片数量），预览文本文件内容。
 
-## 工作流程 / Workflow
-
-### Step 1: Information Collection / 信息收集
-
-**Data Sources / 数据来源:**
-- ArXiv API: Recent papers and preprints
-- Web Search: Personal homepage, lab website, institutional profiles
-- Semantic Scholar API (optional): Paper citations and metadata
-- User uploads: CV, publications list, personal materials
-
-**Collection Methods / 收集方法:**
+### Step 2: 初始化目录
 
 ```bash
-# ArXiv search
-node ${CLAUDE_SKILL_DIR}/tools/arxiv-search.mjs "<name>" [--limit 20]
-
-# Web search with browser
-node ${CLAUDE_SKILL_DIR}/tools/puppeteer-search.mjs "<name>" "<institution>"
-
-# Deep paper analysis (optional, requires API keys)
-node ${CLAUDE_SKILL_DIR}/tools/paper-analysis.mjs "<name>"
+node ${CLAUDE_SKILL_DIR}/tools/ingest.mjs init "<slug>"
 ```
 
-### Step 2: Profile Analysis / 档案分析
+在 `~/.claude/distill_me/<slug>/` 下创建完整目录结构。
 
-Use `${CLAUDE_SKILL_DIR}/prompts/analyzer.md` to extract:
-- Research areas and expertise
-- Publication history and key papers
-- Research style (theoretical vs applied)
-- Communication patterns
-- Academic values and philosophy
+### Step 3: 人格提取
 
-### Step 3: Style Analysis / 风格分析
+使用 `prompts/distiller.md` 提示词，将原始材料喂给 Claude 分析，输出 `profile.json`。
 
-Use `${CLAUDE_SKILL_DIR}/prompts/style-analyzer.md` to determine:
-- Research methodology preferences
-- Academic writing style
-- Communication tone (formal, encouraging, direct)
-- Typical feedback patterns
-- Core research principles
-
-### Step 4: Skill Generation / Skill 生成
-
-Use `${CLAUDE_SKILL_DIR}/prompts/builder.md` to generate:
-
-**1. Mentor Profile JSON** (`~/.claude/mentors/{name}.json`)
-```json
-{
-  "meta": {
-    "version": "1.0",
-    "created_at": "ISO timestamp",
-    "mentor_name": "Name",
-    "affiliation": "Institution"
-  },
-  "profile": {
-    "name_zh": "",
-    "name_en": "",
-    "institution": "",
-    "department": "",
-    "position": "",
-    "website": ""
-  },
-  "research": {
-    "primary_fields": [],
-    "key_publications": []
-  },
-  "style": {
-    "research_style": {},
-    "communication_style": {}
-  }
-}
+对每个文本文件：
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/ingest.mjs read-chunk "<file>" --offset 0 --limit 4000
 ```
 
-**2. Mentor Skill** (`~/.claude/skills/{name}/SKILL.md`)
+分块读取后使用 `prompts/distiller.md` 分析人格特征。
 
-### Step 5: Preview and Confirm / 预览确认
+### Step 4: 记忆提取
 
-Show the user a summary and ask for confirmation:
-```
-📋 Mentor Profile Summary:
+使用 `prompts/memory-extractor.md` 提示词，从每段材料中提取离散记忆。
 
-Name: <name>
-Affiliation: <institution>
-Research Areas: <areas>
-Key Papers: <count> papers analyzed
-Research Style: <style>
-
-Confirm generation? (yes / modify / cancel)
+每条提取的记忆通过 memory-writer 写入：
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/memory-writer.mjs "<slug>" "<category>" "<topic>" --body "..." --type episodic --importance 0.8 --tags "tag1,tag2"
 ```
 
-## 工具使用 / Tool Usage
+### Step 5: 建立索引和链接
 
-| Task | Tool |
+```bash
+# 建立 FAISS 向量索引
+python3 ${CLAUDE_SKILL_DIR}/model/embedder.py build \
+  "~/.claude/distill_me/<slug>/memories" \
+  "~/.claude/distill_me/<slug>"
+
+# 冷启动链接生成（基于嵌入相似度 + 实体共现）
+python3 ${CLAUDE_SKILL_DIR}/model/cold_start.py \
+  "~/.claude/distill_me/<slug>"
+```
+
+### Step 6: 生成技能
+
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/persona-generator.mjs "<slug>"
+```
+
+在 `~/.claude/skills/<slug>/SKILL.md` 生成可调用的数字分身技能。
+
+### Step 7: 预览确认
+
+显示摘要，用户确认/修改/取消。
+
+## 对话工作流 / Chat Workflow
+
+```
+/distill-me chat "小明"
+```
+
+### 对话流程
+
+1. **加载 SKILL.md** — 人格身份和交流风格
+2. **记忆检索** — 根据用户消息检索相关记忆
+
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/memory-retriever.mjs "<slug>" "<query>" --top-k 8 --phase middle
+```
+
+3. **链路行走** — 沿记忆链接扩展关联记忆
+
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/memory-walker.mjs "<slug>" --seeds "id1,id2,id3" --max-nodes 5
+```
+
+4. **组装 prompt** — 注入 `<memory>` 标签
+5. **生成回复** — Claude 以人格身份回复
+6. **后处理** — 提取新记忆、记录训练数据、触发在线训练
+
+### 记忆注入格式
+
+```xml
+<memory id="exp-summer-trip-001" category="experiences" importance="0.8" type="episodic">
+2024年夏天去了云南旅行...
+</memory>
+```
+
+### AI 主动请求记忆
+
+AI 可输出：
+```xml
+<request-memory id="rel-family-mom-001" reason="用户提到了妈妈" />
+```
+
+系统自动检索并在下一轮注入。
+
+### 新记忆生成
+
+AI 在回复末尾输出：
+```xml
+<new-memory category="conversations" topic="topic-slug" importance="0.6" tags="tag1,tag2">
+记忆内容
+</new-memory>
+```
+
+session-manager 自动保存为新记忆文件。
+
+## 记忆系统 / Memory System
+
+### 分级文件夹结构
+
+```
+memories/
+├── identity/          # 核心身份：价值观、性格、自我描述
+├── relationships/     # 人际关系（可含子文件夹：family/, friends/）
+├── experiences/       # 经历记忆（可按年份组织：2024/, 2025/）
+├── knowledge/         # 领域知识和专业技能
+├── opinions/          # 观点和偏好
+├── habits/            # 行为模式和日常习惯
+└── conversations/     # 对话中自动产生的新记忆
+```
+
+### 记忆文件格式
+
+```markdown
+---
+id: "exp-summer-trip-001"
+type: episodic
+created: "2026-04-02T15:30:00Z"
+importance: 0.8
+tags: ["travel", "family"]
+source: "chat_logs/2024-08.txt"
+links:
+  - id: "rel-family-mom-001"
+    relation: "involves"
+    strength: 0.9
+  - id: "emo-happiness-travel-001"
+    relation: "evokes"
+    strength: 0.7
+---
+
+# 2024年夏天旅行
+
+我们全家去了云南旅行，在大理住了一周...
+```
+
+### 检索管线
+
+**第一层：FAISS 向量检索** — O(log n)，HNSW 索引
+
+**第二层：启发式评分**（始终可用）
+```
+score = 0.40 * embedding_similarity
+      + 0.20 * keyword_match
+      + 0.15 * importance
+      + 0.10 * recency
+      + 0.15 * type_boost
+```
+
+**第三层：模型重排**（训练后可用）
+- 410K 参数 MLP，冻结 sentence-transformer 底座
+- 在线训练，对话隐式反馈
+
+**第四层：链路行走**
+- 从 top-8 记忆沿 links 扩展 3-5 条关联记忆
+
+## 在线学习模型 / Online Learning Model
+
+### 架构
+
+```
+对话上下文 → frozen encoder → 384维 ─┐
+                                      ├─ concat [A; B; A*B; |A-B|] → MLP → score
+候选记忆   → frozen encoder → 384维 ─┘
+
+MLP: Linear(1536,256) → ReLU → Linear(256,64) → ReLU → Linear(64,1) → Sigmoid
+底座: paraphrase-multilingual-MiniLM-L12-v2
+可训练参数: ~410K
+```
+
+### 训练信号
+
+- 正：被检索 + 用户继续对话
+- 弱负：被检索 + 对话转向
+- 强负：用户纠正"你记错了"
+
+### 冷启动
+
+初始权重 ≈ 余弦相似度输出。无训练时完全退化为启发式检索，不影响体验。
+
+## 工具一览 / Tool Reference
+
+| 工具 | 用途 |
 |------|------|
-| Search ArXiv papers | `Bash` → `node ${CLAUDE_SKILL_DIR}/tools/arxiv-search.mjs` |
-| Web search (personal pages) | `Bash` → `node ${CLAUDE_SKILL_DIR}/tools/puppeteer-search.mjs` |
-| Deep paper analysis | `Bash` → `node ${CLAUDE_SKILL_DIR}/tools/paper-analysis.mjs` |
-| Read existing profiles | `Read` tool on `~/.claude/mentors/{name}.json` |
-| Write profile JSON | `Write` tool |
-| Generate mentor skill | Use prompts in `${CLAUDE_SKILL_DIR}/prompts/` |
+| `tools/ingest.mjs` | 扫描数据文件夹、初始化目录、分块读取文件 |
+| `tools/memory-writer.mjs` | 创建记忆文件 |
+| `tools/memory-retriever.mjs` | 检索记忆（FAISS + 启发式 + 模型） |
+| `tools/memory-walker.mjs` | 沿链路行走获取关联记忆 |
+| `tools/persona-generator.mjs` | 生成 profile 和 SKILL.md |
+| `tools/session-manager.mjs` | 管理对话状态、记忆注入、对话记忆提取、索引重建 |
+| `tools/memory-consolidator.mjs` | 记忆生命周期管理：统计、衰减淘汰、相似合并 |
+| `model/embedder.py` | 文本嵌入和 FAISS 索引 |
+| `model/linker.py` | 记忆链接评分模型 |
+| `model/trainer.py` | 在线训练 |
+| `model/cold_start.py` | 冷启动初始化和启发式链接生成 |
 
-## 输出位置 / Output Locations
+## 数据存储 / Data Locations
 
-**Profile JSON**: `~/.claude/mentors/{name}.json`
+| 内容 | 路径 |
+|------|------|
+| 人格档案 | `~/.claude/distill_me/{slug}/profile.json` |
+| 运行配置 | `~/.claude/distill_me/{slug}/config.json` |
+| 记忆文件 | `~/.claude/distill_me/{slug}/memories/` |
+| 向量索引 | `~/.claude/distill_me/{slug}/index.faiss` |
+| 模型权重 | `~/.claude/distill_me/{slug}/model/linker_weights.pt` |
+| 技能文件 | `~/.claude/skills/{slug}/SKILL.md` |
 
-**Mentor Skill**: `~/.claude/skills/{name}/SKILL.md`
+## 管理命令 / Management
 
-## 示例 / Examples
-
-### Example 1: Chinese Mentor
-
-```
-/distill-mentor Geoffrey Hinton --affiliation "University of Toronto"
-```
-
-**Output**: Generates `Geoffrey_Hinton.json` and `geoffrey-hinton/SKILL.md` with:
-- Knowledge graphs, representation learning research areas
-- Applied research style
-- Chinese communication patterns
-
-### Example 2: English Mentor
-
-```
-/distill-mentor Geoffrey Hinton --affiliation "University of Toronto"
-```
-
-**Output**: Generates `Geoffrey_Hinton.json` and `Geoffrey_Hinton/SKILL.md` with:
-- Deep learning, neural networks expertise
-- Theoretical + experimental style
-- English communication patterns
-
-## 进化模式 / Evolution Mode
-
-User says "追加信息" / "add more info":
-1. Ask for additional materials (papers, CV, links)
-2. Read existing profile with `Read`
-3. Use `${CLAUDE_SKILL_DIR}/prompts/analyzer.md` for incremental analysis
-4. Update profile with `Edit`
-5. Regenerate skill
-
-User says "这不对" / "that's wrong":
-1. Identify correction target (research area, style, communication)
-2. Update relevant section
-3. Regenerate skill
-
-## 管理命令 / Management Commands
-
-**List mentors**: `ls ~/.claude/mentors/`
-
-**Delete mentor**: `rm ~/.claude/mentors/{name}.json && rm -rf ~/.claude/skills/{name}/`
-
-**View profile**: `cat ~/.claude/mentors/{name}.json | jq`
-
-## 配置选项 / Configuration
-
-**API Keys (optional, for enhanced features)**:
 ```bash
-# For web reader MCP
-export MCP_WEB_READER_ENABLED=true
+# 列出所有数字分身
+ls ~/.claude/distill_me/
 
-# For deep paper analysis
-export ANTHROPIC_API_KEY=sk-ant-xxx
+# 查看某个分身的记忆统计
+find ~/.claude/distill_me/<slug>/memories -name "*.md" | wc -l
+
+# 删除数字分身
+rm -rf ~/.claude/distill_me/<slug> ~/.claude/skills/<slug>
 ```
-
-**Data collection limits**:
-```bash
-# ArXiv search limit
-node tools/arxiv-search.mjs "<name>" --limit 30
-
-# Paper analysis depth
-node tools/paper-analysis.mjs "<name>" --recent-years 3 --top-cited 10
-```
-
-## 故障排查 / Troubleshooting
-
-**Problem**: No papers found on ArXiv
-**Solution**: Use browser search instead - `node tools/puppeteer-search.mjs`
-
-**Problem**: Profile quality low (< 0.6)
-**Solution**:
-1. Add institution info with `--affiliation`
-2. Provide homepage URL or CV
-3. Use deep paper analysis
-
-**Problem**: Style analysis failed
-**Solution**: System uses fallback defaults - skill still generated
-
-## 架构说明 / Architecture
-
-```
-distill-mentor/
-├── SKILL.md                    # This file - skill entry point
-├── prompts/                    # Prompt templates
-│   ├── intake.md              # Info collection questions
-│   ├── analyzer.md            # Profile analysis
-│   ├── builder.md             # Skill generation
-│   └── style-analyzer.md      # Research style analysis
-├── tools/                      # Implementation scripts
-│   ├── arxiv-search.mjs       # ArXiv API search
-│   ├── puppeteer-search.mjs   # Browser-based search
-│   ├── paper-analysis.mjs     # Deep paper analysis
-│   └── skill-generator.mjs    # Main generator logic
-├── mentors/                    # Generated profiles (gitignored)
-├── docs/                       # Documentation
-├── examples/                   # Usage examples
-└── tests/                      # Test files
-```
-
-## 文档 / Documentation
-
-- **Quick Start**: See `docs/QUICKSTART.md`
-- **Paper Analysis Guide**: See `docs/PAPER_ANALYSIS_GUIDE.md`
-- **Puppeteer Setup**: See `docs/PUPPETEER_GUIDE.md`
-- **Examples**: See `examples/` directory
 
 ## 限制 / Limitations
 
-1. **ArXiv Coverage**: Works best for CS/Physics/Math mentors with ArXiv presence
-2. **Language Style**: Style analysis works best with sufficient papers (5+)
-3. **Real-time Updates**: Generated skills are static - regenerate for latest info
+1. 数字分身的质量取决于输入数据的丰富程度
+2. 在线模型需要 3-5 次对话才能开始产生有意义的改进
+3. 记忆提取依赖 LLM 分析，可能有遗漏或误解
+4. 首次加载 sentence-transformers 模型约需数秒
+5. 隐私注意：所有数据存储在本地，不上传
 
-## 最佳实践 / Best Practices
+## 版本 / Version
 
-1. **Always provide affiliation** when name is common
-2. **Use browser search** for mentors without ArXiv presence
-3. **Enable deep analysis** for comprehensive profiles (requires API keys)
-4. **Review generated skill** before use - refine as needed
-5. **Keep skills updated** - regenerate periodically for recent work
-
-## 版本历史 / Version History
-
-- **1.0.0** (2026-03-31): Initial AgentSkills format release
-  - Restructured from monolithic CLI to modular skill system
-  - Added prompt templates for each workflow stage
-  - Separated tools into individual modules
+- **v1.0.0** (2026-04-02): 初始版本
+  - 分级文件夹记忆系统
+  - FAISS 向量检索 + 启发式评分
+  - 在线训练 MLP 链接评分器
+  - 记忆图谱链路行走
+  - 长尾幂律衰减 + 记忆生命周期管理
+  - Claude Code 技能集成
