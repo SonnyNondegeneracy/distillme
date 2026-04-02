@@ -26,7 +26,7 @@
 ### Step 1: 数据扫描
 
 ```bash
-node .`/distill-me/tools/ingest.mjs scan "<data-folder>"
+node ${CLAUDE_SKILL_DIR}/tools/ingest.mjs scan "<data-folder>"
 ```
 
 显示文件统计（文本、JSON、CSV、图片数量），预览文本文件内容。
@@ -34,7 +34,7 @@ node .`/distill-me/tools/ingest.mjs scan "<data-folder>"
 ### Step 2: 初始化目录
 
 ```bash
-node ./distill-me/tools/ingest.mjs init "<slug>"
+node ${CLAUDE_SKILL_DIR}/tools/ingest.mjs init "<slug>"
 ```
 
 在 `~/.claude/distill_me/<slug>/` 下创建完整目录结构。
@@ -45,7 +45,7 @@ node ./distill-me/tools/ingest.mjs init "<slug>"
 
 对每个文本文件：
 ```bash
-node ./distill-me/tools/ingest.mjs read-chunk "<file>" --offset 0 --limit 4000
+node ${CLAUDE_SKILL_DIR}/tools/ingest.mjs read-chunk "<file>" --offset 0 --limit 4000
 ```
 
 分块读取后使用 `prompts/distiller.md` 分析人格特征。
@@ -56,26 +56,26 @@ node ./distill-me/tools/ingest.mjs read-chunk "<file>" --offset 0 --limit 4000
 
 每条提取的记忆通过 memory-writer 写入：
 ```bash
-node ./distill-me/tools/memory-writer.mjs "<slug>" "<category>" "<topic>" --body "..." --type episodic --importance 0.8 --tags "tag1,tag2"
+node ${CLAUDE_SKILL_DIR}/tools/memory-writer.mjs "<slug>" "<category>" "<topic>" --body "..." --type episodic --importance 0.8 --tags "tag1,tag2"
 ```
 
 ### Step 5: 建立索引和链接
 
 ```bash
 # 建立 FAISS 向量索引
-python3 ./distill-me/model/embedder.py build \
+python3 ${CLAUDE_SKILL_DIR}/model/embedder.py build \
   "~/.claude/distill_me/<slug>/memories" \
   "~/.claude/distill_me/<slug>"
 
 # 冷启动链接生成（基于嵌入相似度 + 实体共现）
-python3 ./distill-me/model/cold_start.py \
+python3 ${CLAUDE_SKILL_DIR}/model/cold_start.py \
   "~/.claude/distill_me/<slug>"
 ```
 
 ### Step 6: 生成技能
 
 ```bash
-node ./distill-me/tools/persona-generator.mjs "<slug>"
+node ${CLAUDE_SKILL_DIR}/tools/persona-generator.mjs "<slug>"
 ```
 
 在 `~/.claude/skills/<slug>/SKILL.md` 生成可调用的数字分身技能。
@@ -96,13 +96,13 @@ node ./distill-me/tools/persona-generator.mjs "<slug>"
 2. **记忆检索** — 根据用户消息检索相关记忆
 
 ```bash
-node ./distill-me/tools/memory-retriever.mjs "<slug>" "<query>" --top-k 8 --phase middle
+node ${CLAUDE_SKILL_DIR}/tools/memory-retriever.mjs "<slug>" "<query>" --top-k 8 --phase middle
 ```
 
 3. **链路行走** — 沿记忆链接扩展关联记忆
 
 ```bash
-node ./distill-me/tools/memory-walker.mjs "<slug>" --seeds "id1,id2,id3" --max-nodes 5
+node ${CLAUDE_SKILL_DIR}/tools/memory-walker.mjs "<slug>" --seeds "id1,id2,id3" --max-nodes 5
 ```
 
 4. **组装 prompt** — 注入 `<memory>` 标签
