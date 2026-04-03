@@ -2,7 +2,7 @@
 name: distill-me
 description: "DistillMe — 从个人数据中蒸馏出立体的、有记忆的、会持续学习的数字分身。/ Distill your digital persona from personal data with memory and continuous learning."
 argument-hint: "create|chat|list|update \"<name>\" [--data-folder <path>]"
-version: "1.0.0"
+version: "1.2.0"
 user-invocable: true
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent
 ---
@@ -163,50 +163,60 @@ node ${CLAUDE_SKILL_DIR}/tools/ingest.mjs mark-done "<slug>" "<data-folder>"
 
 ### 对话流程
 
-1. **加载 SKILL.md** — 人格身份和交流风格
-2. **记忆检索** — 根据用户消息检索相关记忆
+每次收到用户消息时，数字分身按以下流程处理：
+
+1. **加载记忆** — 用 Bash 工具执行（不输出任何文字）：
 
 ```bash
-node ${CLAUDE_SKILL_DIR}/tools/memory-retriever.mjs "<slug>" "<query>" --top-k 8 --phase middle
+node ${CLAUDE_SKILL_DIR}/tools/session-manager.mjs compose "<slug>" "<用户消息原文>" --phase middle --user "<用户id>"
 ```
 
-3. **链路行走** — 沿记忆链接扩展关联记忆
+`compose` 内部自动完成四层检索管线：FAISS 向量检索 → 启发式评分取 top-5 种子 → 模型重排（训练后生效） → log₂(n) 深度链路行走。返回的 JSON 中 `memories_xml` 字段包含所有检索到的记忆。
+
+- `--user`：当前对话者 id。如果已通过 `persona-editor user add` 注册，系统自动注入 `<user>` 标签和关系信息。省略则使用 `config.json` 中的 `default_user`，都没有则为匿名 `"user"`。
+- `--phase`：`start`（对话开头）、`middle`（默认）、`deep`（深入聊天）。
+- 如果调用失败，直接用基础个性回复，不要报错给用户。
+
+2. **阅读记忆，生成回复** — Claude 以人格身份回复，记忆影响语气和立场但不被复述。
+
+3. **记忆保存**（可选） — 对话中获得之前不知道的重要新信息时，用 Bash 工具静默保存：
 
 ```bash
-node ${CLAUDE_SKILL_DIR}/tools/memory-walker.mjs "<slug>" --seeds "id1,id2,id3" --max-nodes 5
+node ${CLAUDE_SKILL_DIR}/tools/session-manager.mjs save-memory "<slug>" "<category>" "<topic-slug>" "<1-3句压缩摘要>" --importance <0-1> --tags "tag1,tag2"
 ```
 
-4. **组装 prompt** — 注入 `<memory>` 标签
-5. **生成回复** — Claude 以人格身份回复
-6. **后处理** — 提取新记忆、记录训练数据、触发在线训练
+- 闲聊、寒暄、重复已知信息不保存
+- importance: 0.3-0.5 普通，0.6-0.8 重要，0.9+ 核心
+- 保存过程对用户不可见
+
+4. **反馈收集** — 每次回复后，静默记录实际用了哪些记忆（用于改进检索模型）：
+
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/session-manager.mjs log-feedback "<slug>" "<所有检索到的记忆id，逗号分隔>" "<你实际用到的记忆id，逗号分隔>"
+```
+
+- "实际用到"指：影响了语气、立场、用词的记忆（即使没有明说）
+- 如果没有任何记忆影响了回复，used 留空字符串
+- 用户不应看到这个过程
 
 ### 记忆注入格式
 
+`compose` 返回的 `memories_xml` 中包含两类记忆：
+
 ```xml
-<memory id="exp-summer-trip-001" category="experiences" importance="0.8" type="episodic">
+<!-- 直接检索的种子记忆 -->
+<memory id="exp-summer-trip-001" category="experiences" importance="0.8" score="0.823">
 2024年夏天去了云南旅行...
 </memory>
+
+<!-- 链路行走发现的关联记忆 -->
+<memory id="rel-family-mom-001" category="relationships" importance="0.9" type="walked" linked-from="exp-summer-trip-001">
+和妈妈的关系...
+</memory>
+
+<!-- 对话者身份（如果已注册） -->
+<user id="sonny" name="非简并" relation="本体" />
 ```
-
-### AI 主动请求记忆
-
-AI 可输出：
-```xml
-<request-memory id="rel-family-mom-001" reason="用户提到了妈妈" />
-```
-
-系统自动检索并在下一轮注入。
-
-### 新记忆生成
-
-AI 在回复末尾输出：
-```xml
-<new-memory category="conversations" topic="topic-slug" importance="0.6" tags="tag1,tag2">
-记忆内容
-</new-memory>
-```
-
-session-manager 自动保存为新记忆文件。
 
 ## 记忆系统 / Memory System
 
@@ -249,7 +259,7 @@ links:
 
 ### 检索管线
 
-**第一层：FAISS 向量检索** — O(log n)，HNSW 索引
+**第一层：FAISS 向量检索** — O(log n)，HNSW 索引，取 top-50 候选
 
 **第二层：启发式评分**（始终可用）
 ```
@@ -259,13 +269,19 @@ score = 0.40 * embedding_similarity
       + 0.10 * recency
       + 0.15 * type_boost
 ```
+取 top-5 作为种子记忆。
 
 **第三层：模型重排**（训练后可用）
 - 410K 参数 MLP，冻结 sentence-transformer 底座
 - 在线训练，对话隐式反馈
+- 冷启动时退化为纯启发式
 
-**第四层：链路行走**
-- 从 top-8 记忆沿 links 扩展 3-5 条关联记忆
+**第四层：多层链路行走**
+- 从 5 个种子出发，BFS 深度 = log₂(n)
+- 每跳 score 乘法衰减
+- softmax 采样 ~log₂(n) 条，token 预算 ~2000
+
+总注入量随记忆库对数增长：seeds (5) + walk (~log₂(n))。
 
 ## 在线学习模型 / Online Learning Model
 
@@ -295,16 +311,18 @@ MLP: Linear(1536,256) → ReLU → Linear(256,64) → ReLU → Linear(64,1) → 
 
 | 工具 | 用途 |
 |------|------|
-| `tools/ingest.mjs` | 扫描数据文件夹、初始化目录、分块读取文件 |
-| `tools/memory-writer.mjs` | 创建记忆文件 |
+| `tools/ingest.mjs` | 扫描数据文件夹、初始化目录、分块读取文件、增量检测 (diff/mark-done) |
+| `tools/persona-editor.mjs` | 统一编辑入口：profile + 记忆 + 用户管理，自动级联更新 |
+| `tools/memory-writer.mjs` | 低层记忆文件创建/编辑/删除（不触发同步） |
 | `tools/memory-retriever.mjs` | 检索记忆（FAISS + 启发式 + 模型） |
 | `tools/memory-walker.mjs` | 沿链路行走获取关联记忆 |
-| `tools/persona-generator.mjs` | 生成 profile 和 SKILL.md |
-| `tools/session-manager.mjs` | 管理对话状态、记忆注入、对话记忆提取、索引重建 |
+| `tools/persona-generator.mjs` | 生成 SKILL.md + 身份配置文件 |
+| `tools/session-manager.mjs` | 管理对话状态、记忆注入、记忆保存、索引重建 |
 | `tools/memory-consolidator.mjs` | 记忆生命周期管理：统计、衰减淘汰、相似合并 |
 | `model/embedder.py` | 文本嵌入和 FAISS 索引 |
+| `model/embed_daemon.py` | 嵌入守护进程（消除冷启动） |
 | `model/linker.py` | 记忆链接评分模型 |
-| `model/trainer.py` | 在线训练 |
+| `model/train_linker.py` | 从 feedback 日志训练 linker |
 | `model/cold_start.py` | 冷启动初始化和启发式链接生成 |
 
 ## 数据存储 / Data Locations
@@ -341,10 +359,12 @@ rm -rf ~/.claude/distill_me/<slug> ~/.claude/skills/<slug>
 
 ## 版本 / Version
 
+- **v1.2.0** (2026-04-03/04): 嵌入守护进程 + 个性数据热更新 + 自适应检索
+  - 对话工作流统一为 `compose` 一键加载（内含四层检索管线）
+  - `persona-editor.mjs` 统一编辑入口，自动级联更新
+  - 对话者身份注入 (`--user`)
+  - log(n) 自适应检索：seeds 5 + walk depth log₂(n)
+  - 增量更新：`ingest.mjs diff/mark-done`
+  - 反馈收集 (`log-feedback`) + `train_linker.py` 训练
+  - 嵌入守护进程消除冷启动
 - **v1.0.0** (2026-04-02): 初始版本
-  - 分级文件夹记忆系统
-  - FAISS 向量检索 + 启发式评分
-  - 在线训练 MLP 链接评分器
-  - 记忆图谱链路行走
-  - 长尾幂律衰减 + 记忆生命周期管理
-  - Claude Code 技能集成
