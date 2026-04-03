@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Model weights and indexes (runtime generated, per-persona)
+*.faiss
+*.pt
+index_meta.json
+graph_cache.json
+
+# Logs
+logs/
+*.jsonl
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Personal data (raw interview transcripts, persona data)
+非简并/
+
+# Claude Code local config
+.claude/
