@@ -9,16 +9,11 @@
  *   node memory-retriever.mjs <persona-slug> "<query>" [--top-k 8] [--phase start|middle|deep]
  */
 
-import { execFile } from 'child_process';
 import { readFile, access } from 'fs/promises';
 import { join } from 'path';
-import { promisify } from 'util';
 import { readMemory } from '../lib/memory-format.mjs';
 import { personaDir } from '../lib/utils.mjs';
-
-const execFileAsync = promisify(execFile);
-const EMBEDDER_PATH = new URL('../model/embedder.py', import.meta.url).pathname;
-const LINKER_PATH = new URL('../model/linker.py', import.meta.url).pathname;
+import { queryIndex, rerankCandidates } from '../model/embed-client.mjs';
 
 /**
  * Extract meaningful keywords from a query string.
@@ -150,8 +145,8 @@ function heuristicScore(candidate, query, phase = 'middle') {
 }
 
 /**
- * Try model re-ranking via linker.py.
- * Returns null if model not available (cold start).
+ * Try model re-ranking via daemon.
+ * Returns null if model not available.
  */
 async function modelRerank(personaPath, query, candidateIds) {
   const weightsPath = join(personaPath, 'model', 'linker_weights.pt');
@@ -162,12 +157,8 @@ async function modelRerank(personaPath, query, candidateIds) {
   }
 
   try {
-    const input = JSON.stringify({ query, candidate_ids: candidateIds });
-    const { stdout } = await execFileAsync('python3', [LINKER_PATH, 'rerank', personaPath], {
-      input,
-      timeout: 60000,
-    });
-    return JSON.parse(stdout);
+    const scores = await rerankCandidates(personaPath, query, candidateIds);
+    return scores && Object.keys(scores).length > 0 ? scores : null;
   } catch {
     return null; // Model failed, fall back to heuristic
   }
@@ -221,9 +212,7 @@ export async function retrieveMemories(slug, query, { topK = 8, phase = 'middle'
   let kwResults = [];
 
   const [faissOutcome, kwOutcome] = await Promise.allSettled([
-    execFileAsync('python3', [
-      EMBEDDER_PATH, 'query', pDir, query, '--top-k', String(faissK),
-    ], { timeout: 60000 }).then(r => JSON.parse(r.stdout)),
+    queryIndex(pDir, query, faissK),
     keywordSearch(slug, query, 20),
   ]);
 

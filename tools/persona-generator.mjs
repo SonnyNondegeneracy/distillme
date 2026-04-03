@@ -448,6 +448,18 @@ node ${toolsDir}/session-manager.mjs save-memory ${slug} "<category>" "<topic-sl
 - importance: 0.3-0.5 普通，0.6-0.8 重要，0.9+ 核心
 - 闲聊、寒暄、重复已知信息不保存
 
+### 反馈收集
+
+每次回复**之后**，静默记录你实际用了哪些记忆（用于改进检索模型）：
+
+\`\`\`bash
+node ${toolsDir}/session-manager.mjs log-feedback ${slug} "<所有检索到的记忆id，逗号分隔>" "<你实际用到的记忆id，逗号分隔>"
+\`\`\`
+
+- 用户不应看到这个过程
+- "实际用到"指：影响了你的语气、立场、用词的记忆（即使没有明说）
+- 如果没有任何记忆影响了你的回复，used 留空字符串
+
 ## 说话规则（最重要的章节）
 
 ${buildSpeakingRules(profile, name)}

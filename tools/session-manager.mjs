@@ -22,6 +22,7 @@ import { retrieveMemories } from './memory-retriever.mjs';
 import { walkMemories, formatWalkedMemories, saveGraphCache } from './memory-walker.mjs';
 import { createMemory } from './memory-writer.mjs';
 import { readMemory, writeMemory } from '../lib/memory-format.mjs';
+import { queryIndex, invalidateCache } from '../model/embed-client.mjs';
 
 const execFileAsync = promisify(execFile);
 const EMBEDDER_PATH = new URL('../model/embedder.py', import.meta.url).pathname;
@@ -36,29 +37,13 @@ const DEDUP_SIMILARITY_THRESHOLD = 0.75;
 async function findDuplicate(slug, bodyText) {
   const pDir = personaDir(slug);
   try {
-    const result = await execFileAsync('python3', [
-      EMBEDDER_PATH, 'query', pDir, bodyText, '--top-k', '1'
-    ], { timeout: 60000, env: { ...process.env, CUDA_VISIBLE_DEVICES: '' } });
-    const results = JSON.parse(result.stdout);
+    const results = await queryIndex(pDir, bodyText, 1);
     if (results.length > 0 && results[0].embedding_score > DEDUP_SIMILARITY_THRESHOLD) {
       const hit = results[0];
       const existing = await readMemory(hit.abs_path || hit.path);
       return { match: true, path: hit.abs_path || hit.path, score: hit.embedding_score, ...existing };
     }
-  } catch (err) {
-    // execFileAsync may reject on stderr (e.g. CUDA warnings) even if stdout is valid
-    if (err.stdout) {
-      try {
-        const results = JSON.parse(err.stdout);
-        if (results.length > 0 && results[0].embedding_score > DEDUP_SIMILARITY_THRESHOLD) {
-          const hit = results[0];
-          const existing = await readMemory(hit.abs_path || hit.path);
-          return { match: true, path: hit.abs_path || hit.path, score: hit.embedding_score, ...existing };
-        }
-      } catch {
-        // stdout wasn't valid JSON either — give up on dedup
-      }
-    }
+  } catch {
     // Index doesn't exist yet or query failed — no dedup, proceed with create
   }
   return { match: false };
@@ -260,13 +245,14 @@ export async function rebuildIndex(slug) {
     linksResult = { error: err.message };
   }
 
-  // Step 3: Invalidate graph cache (force rebuild on next walk)
+  // Step 3: Invalidate graph cache and daemon cache
   try {
     const { unlink } = await import('fs/promises');
     await unlink(join(pDir, 'graph_cache.json'));
   } catch {
     // Cache didn't exist, fine
   }
+  await invalidateCache(pDir);
 
   return { index: indexResult, links: linksResult };
 }
