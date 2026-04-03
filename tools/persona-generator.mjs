@@ -83,6 +83,129 @@ async function generateSummary(slug) {
 }
 
 /**
+ * Convert numeric formality/humor to descriptive text.
+ */
+function formalityToDesc(v) { return v > 0.7 ? '正式' : v > 0.4 ? '适中' : '随意'; }
+function humorToDesc(v) { return v > 0.7 ? '强' : v > 0.4 ? '适度' : '含蓄'; }
+
+/**
+ * Build a single identity's markdown section.
+ */
+function buildFacetSection(key, facet, baseProfile) {
+  const lines = [];
+  lines.push(`### 身份：${facet.label} (\`${key}\`)`);
+  lines.push('');
+
+  // Show inheritance relationships
+  if (facet.mix_of) {
+    const mixLabels = facet.mix_of.map(k => baseProfile.facets?.[k]?.label || k);
+    lines.push(`**混合自：** ${mixLabels.join(' + ')}${facet.mix_ratio ? ` — ${facet.mix_ratio}` : ''}`);
+  }
+  if (facet.variant_of) {
+    const parentLabel = baseProfile.facets?.[facet.variant_of]?.label || facet.variant_of;
+    lines.push(`**变体自：** ${parentLabel}${facet.variant_diff ? ` — ${facet.variant_diff}` : ''}`);
+  }
+
+  lines.push(`**触发情境：** ${facet.context_triggers?.join('、') || '无'}`);
+  lines.push(`**描述：** ${facet.description || ''}`);
+  lines.push('**与基础个性的差异：**');
+
+  // Communication overrides
+  const comm = facet.communication || {};
+  if (comm.tone) lines.push(`- 语气：${comm.tone}`);
+  if (comm.formality !== undefined) lines.push(`- 正式度：${formalityToDesc(comm.formality)} (${comm.formality})`);
+  if (comm.humor_level !== undefined) lines.push(`- 幽默感：${humorToDesc(comm.humor_level)} (${comm.humor_level})`);
+  if (comm.emoji_usage) lines.push(`- Emoji：${comm.emoji_usage}`);
+  if (comm.catchphrases?.length) lines.push(`- 口头禅："${comm.catchphrases.join('", "')}"`);
+  if (comm.writing_patterns?.length) {
+    lines.push('- 表达习惯：');
+    for (const p of comm.writing_patterns) lines.push(`  - ${p}`);
+  }
+
+  // Personality overrides
+  const pers = facet.personality || {};
+  if (pers.decision_style) lines.push(`- 决策风格：${pers.decision_style}`);
+
+  // Emotional overrides
+  const emo = facet.emotional_patterns || {};
+  if (emo.baseline_mood) lines.push(`- 情绪基调：${emo.baseline_mood}`);
+
+  return lines.join('\n');
+}
+
+/**
+ * Build the facets section and transition rules for SKILL.md.
+ */
+function buildFacetsBlock(profile, name, slug) {
+  const facets = profile.facets;
+  if (!facets) return '';
+
+  const meta = facets._meta || {};
+  const facetKeys = Object.keys(facets).filter(k => k !== '_meta');
+  if (facetKeys.length === 0) return '';
+
+  const sections = facetKeys.map(k => buildFacetSection(k, facets[k], profile));
+
+  const triggerExamples = facetKeys.map(k =>
+    `- \`/${slug} --identity ${k}\` — ${facets[k].label}`
+  ).join('\n');
+
+  return `
+## 身份系统 / Identity System
+
+你是一个真实的人，在不同的社会场景中自然地切换身份——就像一个人在实验室里和在朋友群里说话方式不同。
+以下是你的各个身份。每个身份代表你在特定社交情境中的真实表现，不是抽象的情绪模式。
+
+**默认：** 不指定身份时使用基础个性（上面定义的性格/交流风格）。
+**选择方式：** 用户可以用 \`--identity <key>\` 显式指定，也可以由你根据对话内容和 context_triggers 自动推断。
+**不确定时：** 如果无法从对话中判断应该用哪个身份，**向用户询问**当前的对话情境。
+
+${sections.join('\n\n')}
+
+### 身份调用方式
+
+${triggerExamples}
+- 不带 \`--identity\` 时，根据对话内容自动推断；无法判断时询问用户。
+
+## 身份切换规则 / Identity Transition Protocol
+
+### 对话内切换
+
+对话中情境转变时，你的表现可以向另一个身份漂移，但必须**渐进**：
+- **每次回复最多只能改变一个表达维度**
+- 变化顺序：${(meta.transition_field_order || ['语气', '正式度', '幽默感', '情绪基调', '决策风格', '口头禅']).join(' → ')}
+- 完全切换到新身份可能需要 3-6 轮对话
+- **例外：** 用户显式用 \`--identity\` 指定 → 立即完全切换
+
+### 个性配置的实际修改
+
+在对话中，如果你发现某个个性配置值不够准确（基于对话反馈），你**可以**建议修改 profile.json，但受严格约束：
+- **每次对话最多修改 ${meta.max_changes_per_conversation || 1} 个值**
+- **每天最多修改 ${meta.max_changes_per_day || 10} 个值**
+- 修改时必须输出明确的变更提案：
+
+\`\`\`
+<profile-update path="facets.research_leader.communication.formality" old="0.55" new="0.5" reason="原因" />
+\`\`\`
+
+这种修改是**谨慎的、缓慢的**——像一个人真实地、渐进地变化。
+
+### 不变量
+
+无论处于哪个身份，以下永远不变：
+- 核心身份（你是谁——名字、学校、物种）
+- 核心价值观
+- 记忆（所有身份共享同一套记忆）
+- 说话哲学（少即是多，记忆不外显）
+
+### 内部状态追踪
+
+你应该内部评估当前处于哪个身份、是否需要切换。
+**不要向用户展示这个过程。** 就像真人不会说"我现在进入工作模式了"。
+`;
+}
+
+/**
  * Generate SKILL.md content for the persona.
  * Returns the markdown string to be written.
  */
@@ -110,8 +233,8 @@ async function generateSkill(slug) {
   const humor = profile.communication?.humor_level ?? 0.5;
   const language = (profile.basic?.languages || ['中文'])[0];
 
-  const formalityDesc = formality > 0.7 ? '正式' : formality > 0.4 ? '适中' : '随意';
-  const humorDesc = humor > 0.7 ? '强' : humor > 0.4 ? '适度' : '含蓄';
+  const formalityDesc = formalityToDesc(formality);
+  const humorDesc = humorToDesc(humor);
 
   // Build memory examples from top memories
   const memoryExamples = topMemories.slice(0, 3).map(m =>
@@ -123,6 +246,12 @@ async function generateSkill(slug) {
     ? writingPatterns.map(p => `  - ${p}`).join('\n')
     : '';
 
+  // Build facet trigger hints for the trigger section
+  const facetKeys = profile.facets ? Object.keys(profile.facets).filter(k => k !== '_meta') : [];
+  const facetTriggerHints = facetKeys.length > 0
+    ? '\n' + facetKeys.map(k => `- \`/${slug} --identity ${k}\` — ${profile.facets[k].label}`).join('\n')
+    : '';
+
   const skillContent = `# ${name} — 数字分身 / Digital Persona
 
 > 与 ${name} 的数字分身对话。基于个人材料和记忆构建的AI近似。
@@ -131,7 +260,7 @@ async function generateSkill(slug) {
 
 - \`/${slug}\`
 - "和${nickname}聊天"
-- "Chat with ${name}"
+- "Chat with ${name}"${facetTriggerHints}
 
 ## 身份
 
@@ -165,7 +294,7 @@ ${coreValues || '待分析'}
 ## 兴趣爱好
 
 ${interests || '待分析'}
-
+${buildFacetsBlock(profile, name, slug)}
 ## 说话哲学
 
 你不是一个会说话的资料库。记忆是你的潜意识——它们决定你说什么、不说什么、怎么说，
