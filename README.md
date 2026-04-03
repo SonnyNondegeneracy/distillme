@@ -78,6 +78,94 @@ python3 model/cold_start.py generate-links ~/.claude/distill_me/xiaoming
 node tools/persona-generator.mjs xiaoming
 ```
 
+### 增量更新（上传新文件后一键更新）
+
+当你往数据文件夹添加了新文件或修改了已有文件，一条命令即可增量更新：
+
+```
+/distill-me update "小明" --data-folder /path/to/data
+```
+
+系统会：
+1. **对比文件 hash**，找出新增和修改的文件（不会重复处理已有的）
+2. **逐个分析**新文件，提取记忆
+3. **自动重建索引**（FAISS + links + daemon cache）
+4. 如果新材料揭示了新的人格信息，自动更新 profile + SKILL.md
+5. **记录处理状态**，下次只处理新的增量
+
+也可以手动检查哪些文件是新的：
+
+```bash
+node tools/ingest.mjs diff xiaoming /path/to/data
+```
+
+### 编辑人格和记忆
+
+创建完成后，随时可以用 `persona-editor` 修改：
+
+```bash
+# 查看/修改 profile
+node tools/persona-editor.mjs profile get xiaoming
+node tools/persona-editor.mjs profile get xiaoming --path "communication.humor_level"
+node tools/persona-editor.mjs profile set xiaoming --path "communication.humor_level" --value 0.8
+node tools/persona-editor.mjs profile set xiaoming --json '{"speaking_style": {"verbosity": "moderate"}}'
+
+# 增删改记忆（自动重建索引）
+node tools/persona-editor.mjs memory add xiaoming experiences "new-trip" \
+  --body "2026年春天去了杭州，西湖边散步很舒服。" --importance 0.7 --tags "travel,hangzhou"
+node tools/persona-editor.mjs memory edit xiaoming exp-new-trip-001 --importance 0.8
+node tools/persona-editor.mjs memory delete xiaoming exp-new-trip-001
+node tools/persona-editor.mjs memory list xiaoming --category experiences --sort importance
+node tools/persona-editor.mjs memory show xiaoming exp-new-trip-001
+
+# 添加/删除身份
+node tools/persona-editor.mjs profile add-facet xiaoming teacher \
+  --json '{"label":"老师身份", "context_triggers":["上课","学生"], "communication":{"formality":0.7}}'
+node tools/persona-editor.mjs profile remove-facet xiaoming teacher
+
+# 手动全量同步（重建索引 + 重新生成 SKILL.md）
+node tools/persona-editor.mjs sync xiaoming
+```
+
+每次 memory add/edit/delete 自动级联：rebuild FAISS → regenerate links → invalidate daemon cache。
+每次 profile set 自动级联：regenerate SKILL.md + identity files。
+
+### 设置对话者身份
+
+数字分身需要知道"谁在跟我说话"，才能调整语气和称呼。
+
+**注册对话者：**
+
+```bash
+# 注册（第一个注册的用户自动成为默认对话者）
+node tools/persona-editor.mjs user add xiaoming mom --name "妈妈" --relation "母亲" --notes "经常打电话关心学习"
+node tools/persona-editor.mjs user add xiaoming bestfriend --name "小李" --relation "大学室友"
+
+# 查看已注册用户和默认用户
+node tools/persona-editor.mjs user list xiaoming
+
+# 切换默认对话者（之后 compose 自动使用）
+node tools/persona-editor.mjs user set-default xiaoming mom
+
+# 清除默认（退回匿名）
+node tools/persona-editor.mjs user set-default xiaoming none
+
+# 删除用户
+node tools/persona-editor.mjs user remove xiaoming bestfriend
+```
+
+**在 Claude Code 中使用：**
+
+设置好默认用户后，每次对话自动生效——不需要额外操作。`compose` 会自动从 `config.json` 读取 `default_user`，注入 `<user>` 标签到记忆上下文中。
+
+如果需要临时切换身份，可以在 compose 命令中手动指定：
+
+```bash
+node tools/session-manager.mjs compose xiaoming "最近怎么样" --user bestfriend
+```
+
+**优先级：** `--user` 参数 > `config.default_user` > 匿名 `"user"`
+
 ### 与数字分身对话
 
 创建完成后，在 Claude Code 中直接调用：
@@ -133,7 +221,16 @@ links:                      # 关联记忆 —— 形成可行走的图谱
 
 **关键设计**：每条记忆不是孤立的文件，而是通过 `links` 字段指向其他记忆，形成一张**记忆图谱**。检索时可以沿链路"行走"，找到语义相关但关键词不重叠的记忆。
 
-### 记忆检索：四层管线
+### 记忆检索：四层管线 + log(n) 自适应
+
+注入的记忆总量随记忆库大小**对数增长**：seeds (固定 5 条) + walk (~log₂(n) 条)。
+
+| 记忆库大小 n | log₂(n) | seeds | walk | 总注入 |
+|-------------|---------|-------|------|--------|
+| 50 | 6 | 5 | ~6 | ~11 |
+| 200 | 8 | 5 | ~8 | ~13 |
+| 1000 | 10 | 5 | ~10 | ~15 |
+| 10000 | 14 | 5 | ~14 | ~19 |
 
 ```
 用户消息 "你还记得和妈妈去旅行吗？"
@@ -152,7 +249,7 @@ links:                      # 关联记忆 —— 形成可行走的图谱
   │       + 0.15 × importance            │
   │       + 0.10 × recency               │
   │       + 0.15 × type_boost            │
-  │ 取 top-8                              │
+  │ 取 top-5 作为种子                     │
   └──────────────┬───────────────────────┘
                  │
                  ▼
@@ -164,15 +261,19 @@ links:                      # 关联记忆 —— 形成可行走的图谱
                  │
                  ▼
   ┌──────────────────────────────────────┐
-  │ 第四层：链路行走                       │
-  │ 从 top-8 沿 links 扩展 3-5 条         │
-  │ 关联记忆（token 预算 ~800）            │
+  │ 第四层：多层链路行走                   │
+  │ 从 5 个种子出发，BFS 深度 = log₂(n)   │
+  │ 每跳 score 乘法衰减（远端记忆得分低） │
+  │ softmax 采样 ~log₂(n) 条              │
+  │ token 预算 ~2000                      │
   └──────────────┬───────────────────────┘
                  │
                  ▼
-         注入到 <memory> 标签
+         注入到 <memory> + <user> 标签
          送入 Claude 生成回复
 ```
+
+**为什么 log(n)**：walk 深度 log₂(n) 保证图上任意节点在理论上都可达（类似小世界网络）。记忆越多，注入越多但增长缓慢，不会爆 context。
 
 ### 对话中的记忆写入
 
@@ -276,11 +377,11 @@ node tools/memory-consolidator.mjs stats xiaoming
 - **训练耗时**：< 5 秒/次，每次对话结束后异步训练
 
 ```bash
-# 查看训练状态
-python3 model/trainer.py status ~/.claude/distill_me/xiaoming
+# 查看训练数据统计
+python3 model/train_linker.py ~/.claude/distill_me/xiaoming --info
 
-# 手动触发训练
-python3 model/trainer.py train ~/.claude/distill_me/xiaoming
+# 手动触发训练（需要至少 20 条 feedback 数据）
+python3 model/train_linker.py ~/.claude/distill_me/xiaoming --epochs 20
 ```
 
 ---
@@ -294,14 +395,30 @@ python3 model/trainer.py train ~/.claude/distill_me/xiaoming
 | `node tools/ingest.mjs scan <folder>` | 扫描数据文件夹，报告文件统计 |
 | `node tools/ingest.mjs init <slug>` | 初始化 persona 目录结构 |
 | `node tools/ingest.mjs read-chunk <file> [--offset N] [--limit N]` | 分块读取文件供 LLM 分析 |
-| `node tools/memory-writer.mjs <slug> <category> <topic> --body "..." [--type T] [--importance N] [--tags "a,b"]` | 创建记忆文件 |
+| `node tools/ingest.mjs diff <slug> <data-folder>` | 找出新增/修改的文件（hash 对比） |
+| `node tools/ingest.mjs mark-done <slug> <data-folder>` | 记录当前文件为已处理 |
+| `node tools/persona-editor.mjs profile get <slug> [--path "field"]` | 读取 profile（完整或指定字段） |
+| `node tools/persona-editor.mjs profile set <slug> --path "field" --value V` | 修改 profile 字段 + 自动重新生成 SKILL.md |
+| `node tools/persona-editor.mjs profile set <slug> --json '{...}'` | 深度合并 JSON 到 profile |
+| `node tools/persona-editor.mjs profile add-facet <slug> <key> --json '{...}'` | 添加身份 facet |
+| `node tools/persona-editor.mjs profile remove-facet <slug> <key>` | 删除身份 facet |
+| `node tools/persona-editor.mjs memory add <slug> <cat> <topic> --body "..." [--importance N] [--tags "a,b"]` | 创建记忆 + 自动重建索引 |
+| `node tools/persona-editor.mjs memory edit <slug> <id> [--body "..."] [--importance N]` | 编辑记忆 + 自动重建索引 |
+| `node tools/persona-editor.mjs memory delete <slug> <id>` | 删除记忆 + 自动重建索引 |
+| `node tools/persona-editor.mjs memory list <slug> [--category C] [--sort importance\|created]` | 列出记忆 |
+| `node tools/persona-editor.mjs memory show <slug> <id>` | 查看记忆完整内容 |
+| `node tools/persona-editor.mjs user add <slug> <id> [--name N] [--relation R] [--notes N]` | 注册对话者 |
+| `node tools/persona-editor.mjs user list <slug>` | 列出已注册对话者 |
+| `node tools/persona-editor.mjs user remove <slug> <id>` | 删除对话者 |
+| `node tools/persona-editor.mjs sync <slug>` | 手动全量同步（索引+SKILL） |
+| `node tools/memory-writer.mjs <slug> <category> <topic> --body "..." [--type T] [--importance N] [--tags "a,b"]` | 低层：创建记忆文件（不触发同步） |
 | `node tools/memory-retriever.mjs <slug> "<query>" [--top-k 8] [--phase start\|middle\|deep]` | 检索记忆 |
 | `node tools/memory-walker.mjs <slug> --seeds "id1,id2" [--max-nodes 5] [--min-strength 0.15]` | 沿链路行走 |
-| `node tools/persona-generator.mjs <slug>` | 生成 SKILL.md |
+| `node tools/persona-generator.mjs <slug>` | 生成 SKILL.md + identity files |
 | `node tools/persona-generator.mjs <slug> --summary` | 输出人格摘要 |
-| `node tools/session-manager.mjs compose <slug> "<msg>" [--phase P]` | 组装带记忆的 prompt |
+| `node tools/session-manager.mjs compose <slug> "<msg>" [--phase P] [--user <id>]` | 组装带记忆的 prompt（含用户身份） |
 | `node tools/session-manager.mjs extract <slug> "<response>"` | 从 AI 回复中提取 `<new-memory>` |
-| `node tools/session-manager.mjs save-memory <slug> <cat> <topic> "<body>"` | 手动保存对话记忆 |
+| `node tools/session-manager.mjs save-memory <slug> <cat> <topic> "<body>"` | 保存对话记忆 |
 | `node tools/session-manager.mjs rebuild-index <slug>` | 重建 FAISS 索引和链接 |
 | `node tools/session-manager.mjs log-feedback <slug> "<retrieved>" "<used>"` | 记录训练反馈 |
 | `node tools/memory-consolidator.mjs stats <slug>` | 记忆统计 |
@@ -314,10 +431,11 @@ python3 model/trainer.py train ~/.claude/distill_me/xiaoming
 |------|------|
 | `python3 model/embedder.py build <memories_dir> <output_dir>` | 构建 FAISS 向量索引 |
 | `python3 model/embedder.py query <dir> "<query>" [--top-k 50]` | 查询向量索引 |
+| `python3 model/embed_daemon.py [--socket /tmp/distillme_embed.sock]` | 启动嵌入守护进程（自动管理，通常不需手动启动） |
 | `python3 model/linker.py info` | 打印模型参数信息 |
 | `python3 model/linker.py rerank <persona_dir>` | 模型重排（stdin 传入 JSON） |
-| `python3 model/trainer.py train <persona_dir> [--epochs 3]` | 在线训练 |
-| `python3 model/trainer.py status <persona_dir>` | 查看训练状态 |
+| `python3 model/train_linker.py <persona_dir> [--epochs 20] [--lr 1e-3]` | 从 feedback 日志训练 linker |
+| `python3 model/train_linker.py <persona_dir> --info` | 查看训练数据统计 |
 | `python3 model/cold_start.py init-weights` | 测试冷启动初始化 |
 | `python3 model/cold_start.py generate-links <persona_dir>` | 生成启发式记忆链接 |
 
@@ -335,8 +453,12 @@ python3 model/trainer.py train ~/.claude/distill_me/xiaoming
 ├── index_flat.faiss       # Flat 索引副本（供 reconstruct）
 ├── index_meta.json        # 向量 ID → 记忆文件路径映射
 ├── graph_cache.json       # 图缓存（O(1) 加载，避免逐文件扫描）
+├── identities/            # 身份配置文件（按需加载）
+│   ├── phd_student.md
+│   └── ...
 ├── model/
-│   └── linker_weights.pt  # 训练后的 MLP 权重
+│   ├── linker_weights.pt  # 训练后的 MLP 权重
+│   └── train_meta.json    # 最近一次训练的元数据
 ├── memories/              # 分级记忆文件夹
 │   ├── identity/
 │   ├── relationships/
@@ -412,6 +534,8 @@ python3 model/trainer.py train ~/.claude/distill_me/xiaoming
 
 1万条记忆的典型检索延迟 < 200ms（含模型加载约 2-3s 首次）。
 
+**嵌入守护进程**：首次调用自动启动 `embed_daemon.py`，通过 Unix socket 常驻内存，消除每次 Python 冷启动的 ~13s 开销。多个 Node 进程共享同一个守护进程。
+
 ---
 
 ## 目录结构
@@ -431,16 +555,19 @@ distill-me/
 │   └── conversation-system.md         # 运行时 system prompt 模板
 ├── tools/
 │   ├── ingest.mjs                     # 数据扫描和初始化
-│   ├── memory-writer.mjs              # 记忆文件创建
+│   ├── persona-editor.mjs             # 统一编辑入口（profile + 记忆 + 自动同步）
+│   ├── persona-generator.mjs          # 生成 SKILL.md + 身份文件
+│   ├── memory-writer.mjs              # 记忆文件创建/编辑/删除
 │   ├── memory-retriever.mjs           # 四层检索管线
 │   ├── memory-walker.mjs              # 链路行走 + 图缓存
 │   ├── memory-consolidator.mjs        # 记忆淘汰/合并/统计
-│   ├── persona-generator.mjs          # 生成 profile + SKILL.md
 │   └── session-manager.mjs            # 对话管理、记忆提取、索引重建
 ├── model/
 │   ├── embedder.py                    # sentence-transformers + FAISS
+│   ├── embed_daemon.py                # 嵌入守护进程（消除冷启动）
+│   ├── embed-client.mjs               # Node 端守护进程客户端
 │   ├── linker.py                      # 410K MLP 记忆评分器
-│   ├── trainer.py                     # 在线训练
+│   ├── train_linker.py                # linker 训练脚本
 │   └── cold_start.py                  # 冷启动 + 启发式链接
 ├── lib/
 │   ├── memory-format.mjs              # YAML+MD 解析
@@ -467,23 +594,23 @@ distill-me/
               ┌────────────▼────────────┐
               │  对话阶段 (持续)          │
               │                          │
-              │  用户消息                  │
-              │    → memory-retriever     │  O(log n) 检索
-              │    → memory-walker        │  链路行走
-              │    → session-manager      │  组装 <memory> prompt
+              │  用户消息 + 用户身份       │
+              │    → memory-retriever     │  5 seeds (FAISS + 启发式)
+              │    → memory-walker        │  log₂(n) 层 BFS 行走
+              │    → session-manager      │  组装 <user> + <memory>
               │    → Claude 回复          │
               │    → extract <new-memory> │  选择性提取（压缩摘要）
               │    → log-feedback         │  记录训练数据
               └────────────┬─────────────┘
                            │
               ┌────────────▼────────────┐
-              │  维护阶段 (定期)          │
+              │  维护阶段 (按需)          │
               │                          │
-              │  consolidator stats      │  检查记忆健康
+              │  persona-editor          │  编辑 profile/记忆/用户
+              │  ingest diff + update    │  增量导入新数据
               │  consolidator prune      │  淘汰衰减记忆
               │  consolidator merge      │  合并相似记忆
-              │  rebuild-index           │  重建索引
-              │  trainer train           │  在线训练模型
+              │  train_linker.py         │  训练 linker 模型
               └─────────────────────────┘
 ```
 
@@ -513,11 +640,21 @@ node test/run-tests.mjs
 - 数字分身质量取决于输入数据的丰富程度，数据越多越立体
 - 在线模型需要 3-5 次对话才产生有意义的改进
 - 记忆提取依赖 LLM 分析，可能有遗漏或误读
-- 首次加载 sentence-transformers 模型约需数秒
+- 首次加载 sentence-transformers 模型约需数秒（后续由守护进程常驻，毫秒级响应）
 - 所有数据纯本地存储，不涉及网络传输
 
 ## 版本
 
+- **v1.2.0** (2026-04-03/04)：嵌入守护进程 + 个性数据热更新 + 自适应检索
+  - 嵌入守护进程 (`embed_daemon.py`)：Unix socket 常驻，消除 ~13s/次 Python 冷启动，compose 延迟从 79s 降至 ~6s
+  - `persona-editor.mjs`：统一的 profile + 记忆 + 用户编辑 CLI，修改后自动级联更新
+  - 对话者身份：`user add/list/remove` 注册对话者，compose 时 `--user <id>` 注入身份信息，影响语气和记忆检索
+  - log(n) 自适应检索：seeds 固定 5 条 + 多层 BFS walk 深度 log₂(n)，总注入量随记忆库对数增长
+  - 增量更新：`ingest.mjs diff/mark-done` 通过 SHA-256 hash 检测新增/修改文件，`/distill-me update` 一键更新
+  - `train_linker.py`：从 feedback 日志训练 linker MLP（支持 class-weighted BCE、early stopping）
+  - linker 兼容新增记忆：输入是 embedding 对而非固定 ID，新记忆无需 retrain 即可被评分
+  - 说话风格参数化：`profile.speaking_style` 控制长度限制、决策树、沉默行为
+  - 身份系统外置：facet 配置文件从 SKILL.md 内联改为 `identities/*.md` 按需加载
 - **v1.1.0** (2026-04-03)：身份系统 + 说话哲学
   - 身份系统：每个 persona 可定义多个社会身份（博士生、主播、项目leader等），支持继承(`variant_of`)和混合(`mix_of`)
   - 说话哲学：记忆是潜意识而非台词——注入的记忆塑造行为但不被复述，大部分无关记忆应被忽略

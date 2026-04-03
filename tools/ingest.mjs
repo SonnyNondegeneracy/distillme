@@ -11,10 +11,13 @@
  *   node ingest.mjs scan <data-folder>              # Scan and report contents
  *   node ingest.mjs init <slug>                      # Initialize persona directory structure
  *   node ingest.mjs read-chunk <file> [--offset 0] [--limit 4000]  # Read a chunk of a file
+ *   node ingest.mjs diff <slug> <data-folder>        # Find new/changed files since last ingest
+ *   node ingest.mjs mark-done <slug> <data-folder>   # Record current file state as processed
  */
 
-import { readFile, readdir, stat, mkdir } from 'fs/promises';
-import { join, extname, relative } from 'path';
+import { readFile, readdir, stat, mkdir, writeFile } from 'fs/promises';
+import { join, extname, relative, resolve } from 'path';
+import { createHash } from 'crypto';
 import { scanDataFolder, personaDir, memoriesDir, MEMORY_CATEGORIES } from '../lib/utils.mjs';
 
 /**
@@ -123,13 +126,115 @@ async function readChunk(filePath, offset = 0, limit = 4000) {
   };
 }
 
+/**
+ * Compute a fast hash of file content for change detection.
+ */
+function fileHash(content) {
+  return createHash('sha256').update(content).digest('hex').slice(0, 16);
+}
+
+/**
+ * Load the ingest log (records which files have been processed).
+ */
+async function loadIngestLog(slug) {
+  const logPath = join(personaDir(slug), 'ingest_log.json');
+  try {
+    return JSON.parse(await readFile(logPath, 'utf-8'));
+  } catch {
+    return { files: {}, last_ingest: null };
+  }
+}
+
+/**
+ * Save the ingest log.
+ */
+async function saveIngestLog(slug, log) {
+  const logPath = join(personaDir(slug), 'ingest_log.json');
+  await writeFile(logPath, JSON.stringify(log, null, 2) + '\n', 'utf-8');
+}
+
+/**
+ * Find new or changed files since the last ingest.
+ * Compares file hashes to detect changes, not just timestamps.
+ *
+ * Returns { new_files: [...], changed_files: [...], unchanged: N, total: N }
+ */
+async function diff(slug, dataFolder) {
+  const log = await loadIngestLog(slug);
+  const files = await scanDataFolder(dataFolder);
+  const allFiles = [...files.text, ...files.json, ...files.csv];
+
+  const newFiles = [];
+  const changedFiles = [];
+  let unchanged = 0;
+
+  for (const filePath of allFiles) {
+    const relPath = relative(resolve(dataFolder), resolve(filePath));
+    const content = await readFile(filePath, 'utf-8');
+    const hash = fileHash(content);
+    const fstat = await stat(filePath);
+
+    const prev = log.files[relPath];
+    if (!prev) {
+      newFiles.push({ path: filePath, rel_path: relPath, size_kb: Math.round(fstat.size / 1024), hash });
+    } else if (prev.hash !== hash) {
+      changedFiles.push({ path: filePath, rel_path: relPath, size_kb: Math.round(fstat.size / 1024), hash, prev_hash: prev.hash });
+    } else {
+      unchanged++;
+    }
+  }
+
+  return {
+    data_folder: dataFolder,
+    new_files: newFiles,
+    changed_files: changedFiles,
+    unchanged,
+    total: allFiles.length,
+    to_process: newFiles.length + changedFiles.length,
+    last_ingest: log.last_ingest,
+  };
+}
+
+/**
+ * Mark all current files in data folder as processed.
+ * Call this after a successful ingest to update the baseline.
+ */
+async function markDone(slug, dataFolder) {
+  const log = await loadIngestLog(slug);
+  const files = await scanDataFolder(dataFolder);
+  const allFiles = [...files.text, ...files.json, ...files.csv];
+
+  for (const filePath of allFiles) {
+    const relPath = relative(resolve(dataFolder), resolve(filePath));
+    const content = await readFile(filePath, 'utf-8');
+    const hash = fileHash(content);
+    const fstat = await stat(filePath);
+    log.files[relPath] = {
+      hash,
+      size: fstat.size,
+      processed_at: new Date().toISOString(),
+    };
+  }
+
+  log.last_ingest = new Date().toISOString();
+  await saveIngestLog(slug, log);
+
+  return {
+    status: 'ok',
+    files_recorded: allFiles.length,
+    last_ingest: log.last_ingest,
+  };
+}
+
 // CLI mode
 const args = process.argv.slice(2);
 if (args.length < 1) {
   console.log(`Usage:
   node ingest.mjs scan <data-folder>
   node ingest.mjs init <slug>
-  node ingest.mjs read-chunk <file> [--offset 0] [--limit 4000]`);
+  node ingest.mjs read-chunk <file> [--offset 0] [--limit 4000]
+  node ingest.mjs diff <slug> <data-folder>
+  node ingest.mjs mark-done <slug> <data-folder>`);
   process.exit(1);
 }
 
@@ -152,6 +257,22 @@ if (cmd === 'scan') {
     if (args[i] === '--limit' && args[i + 1]) limit = parseInt(args[++i]);
   }
   readChunk(args[1], offset, limit).then(r => console.log(JSON.stringify(r, null, 2))).catch(e => {
+    console.error(e.message);
+    process.exit(1);
+  });
+} else if (cmd === 'diff') {
+  const slug = args[1];
+  const dataFolder = args[2];
+  if (!slug || !dataFolder) { console.error('Usage: node ingest.mjs diff <slug> <data-folder>'); process.exit(1); }
+  diff(slug, dataFolder).then(r => console.log(JSON.stringify(r, null, 2))).catch(e => {
+    console.error(e.message);
+    process.exit(1);
+  });
+} else if (cmd === 'mark-done') {
+  const slug = args[1];
+  const dataFolder = args[2];
+  if (!slug || !dataFolder) { console.error('Usage: node ingest.mjs mark-done <slug> <data-folder>'); process.exit(1); }
+  markDone(slug, dataFolder).then(r => console.log(JSON.stringify(r, null, 2))).catch(e => {
     console.error(e.message);
     process.exit(1);
   });

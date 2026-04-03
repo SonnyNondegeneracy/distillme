@@ -93,6 +93,68 @@ node ${CLAUDE_SKILL_DIR}/tools/persona-generator.mjs "<slug>"
 
 显示摘要，用户确认/修改/取消。
 
+### Step 8: 记录已处理文件
+
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/ingest.mjs mark-done "<slug>" "<data-folder>"
+```
+
+将当前文件状态（hash）记录到 `ingest_log.json`，后续 update 时用于比对。
+
+## 增量更新工作流 / Update Workflow
+
+```
+/distill-me update "小明" --data-folder /path/to/data
+```
+
+当用户上传了新文件或修改了已有文件，一键增量更新。
+
+### Step 1: 检测变更
+
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/ingest.mjs diff "<slug>" "<data-folder>"
+```
+
+输出新增和修改的文件列表（通过 SHA-256 hash 对比，不依赖时间戳）。
+如果 `to_process` 为 0，提示"没有新内容"并结束。
+
+### Step 2: 读取并提取新记忆
+
+对每个新增/变更的文件，分块读取：
+
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/ingest.mjs read-chunk "<file>" --offset 0 --limit 4000
+```
+
+使用 `prompts/memory-extractor.md` 提取记忆。每条记忆通过 persona-editor 写入（自动触发索引重建）：
+
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/persona-editor.mjs memory add "<slug>" "<category>" "<topic>" \
+  --body "..." --importance 0.8 --tags "tag1,tag2" --type episodic
+```
+
+### Step 3: 更新人格（可选）
+
+如果新材料揭示了之前不知道的人格特征（新兴趣、新交流习惯、态度变化），用 persona-editor 更新 profile：
+
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/persona-editor.mjs profile set "<slug>" --json '{"values": {"interests": [...]}}'
+```
+
+这会自动重新生成 SKILL.md。
+
+**注意**：只在新材料确实包含新人格信息时才更新 profile。日常记忆不需要改 profile。
+
+### Step 4: 记录已处理
+
+```bash
+node ${CLAUDE_SKILL_DIR}/tools/ingest.mjs mark-done "<slug>" "<data-folder>"
+```
+
+### Step 5: 报告
+
+输出本次更新的摘要：新增了多少条记忆、是否更新了 profile、当前记忆总数。
+
 ## 对话工作流 / Chat Workflow
 
 ```

@@ -144,26 +144,38 @@ export async function saveGraphCache(slug, graph) {
 }
 
 /**
- * Walk from seed memories along links, respecting token budget.
+ * Walk from seed memories along links, with depth and node count scaling as log(n).
+ *
+ * Walk depth = ceil(log2(n)), ensuring all memories are reachable in principle.
+ * Max nodes returned = ceil(log2(n)), so total injected memories scale logarithmically.
  *
  * @param {string} slug - Persona slug
  * @param {string[]} seedIds - Starting memory IDs
  * @param {Map<string, number>} seedScores - Score for each seed
  * @param {Object} options
+ * @param {number} [options.totalMemories] - Total memory count (for log scaling)
+ * @param {number} [options.maxNodes] - Override max walked nodes (default: log2(n))
+ * @param {number} [options.maxDepth] - Override walk depth (default: log2(n))
+ * @param {number} [options.minStrength=0.15] - Minimum edge strength
+ * @param {number} [options.tokenBudget=2000] - Token budget for walked memories
  * @returns {Array} Additional memories found via walking
  */
 export async function walkMemories(slug, seedIds, seedScores, options = {}) {
-  const {
-    maxNodes = 5,
-    minStrength = 0.3,
-    tokenBudget = 800,
-  } = options;
-
   const graph = await loadGraph(slug);
-
   if (graph.size === 0) return [];
 
-  const walked = graph.walk(seedIds, seedScores, { maxNodes: maxNodes * 3, minStrength });
+  // Scale with log2(n): depth and node count both ~ log(n)
+  const n = options.totalMemories || graph.size;
+  const logN = Math.max(3, Math.ceil(Math.log2(n)));  // floor at 3 for small n
+
+  const {
+    maxNodes = logN,
+    maxDepth = logN,
+    minStrength = 0.15,
+    tokenBudget = 2000,
+  } = options;
+
+  const walked = graph.walk(seedIds, seedScores, { maxDepth, maxNodes: maxNodes * 3, minStrength });
 
   // Softmax-weighted sampling instead of deterministic top-N
   const sampled = weightedSample(walked, maxNodes * 2, 0.7);
@@ -180,6 +192,7 @@ export async function walkMemories(slug, seedIds, seedScores, options = {}) {
       score: node.score,
       from_id: node.fromId,
       relation: node.relation,
+      depth: node.depth,
       category: node.meta.type || 'semantic',
       importance: node.meta.importance || 0.5,
       body: node.body,

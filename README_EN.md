@@ -78,6 +78,94 @@ python3 model/cold_start.py generate-links ~/.claude/distill_me/alice
 node tools/persona-generator.mjs alice
 ```
 
+### Incremental Update (one-command update after uploading new files)
+
+When you add new files or modify existing ones in the data folder, a single command handles the incremental update:
+
+```
+/distill-me update "Alice" --data-folder /path/to/data
+```
+
+The system will:
+1. **Compare file hashes** to find new and changed files (won't reprocess existing ones)
+2. **Analyze each new file** and extract memories
+3. **Auto-rebuild indexes** (FAISS + links + daemon cache)
+4. If new material reveals personality insights, auto-update profile + SKILL.md
+5. **Record processing state** so next time only new increments are processed
+
+You can also manually check which files are new:
+
+```bash
+node tools/ingest.mjs diff alice /path/to/data
+```
+
+### Edit Personality and Memories
+
+After creation, use `persona-editor` to modify at any time:
+
+```bash
+# View/modify profile
+node tools/persona-editor.mjs profile get alice
+node tools/persona-editor.mjs profile get alice --path "communication.humor_level"
+node tools/persona-editor.mjs profile set alice --path "communication.humor_level" --value 0.8
+node tools/persona-editor.mjs profile set alice --json '{"speaking_style": {"verbosity": "moderate"}}'
+
+# Add/edit/delete memories (auto-rebuilds index)
+node tools/persona-editor.mjs memory add alice experiences "new-trip" \
+  --body "Went to Kyoto in spring 2026. The cherry blossoms were stunning." --importance 0.7 --tags "travel,kyoto"
+node tools/persona-editor.mjs memory edit alice exp-new-trip-001 --importance 0.8
+node tools/persona-editor.mjs memory delete alice exp-new-trip-001
+node tools/persona-editor.mjs memory list alice --category experiences --sort importance
+node tools/persona-editor.mjs memory show alice exp-new-trip-001
+
+# Add/remove identity facets
+node tools/persona-editor.mjs profile add-facet alice teacher \
+  --json '{"label":"Teacher", "context_triggers":["class","students"], "communication":{"formality":0.7}}'
+node tools/persona-editor.mjs profile remove-facet alice teacher
+
+# Manual full sync (rebuild index + regenerate SKILL.md)
+node tools/persona-editor.mjs sync alice
+```
+
+Every memory add/edit/delete auto-cascades: rebuild FAISS → regenerate links → invalidate daemon cache.
+Every profile set auto-cascades: regenerate SKILL.md + identity files.
+
+### Set Up Conversation Partner Identity
+
+The digital persona needs to know "who is talking to me" to adjust tone and address.
+
+**Register a conversation partner:**
+
+```bash
+# Register (the first registered user automatically becomes the default)
+node tools/persona-editor.mjs user add alice mom --name "Mom" --relation "mother" --notes "Always calls to check on studies"
+node tools/persona-editor.mjs user add alice bestfriend --name "Jamie" --relation "college roommate"
+
+# View registered users and default user
+node tools/persona-editor.mjs user list alice
+
+# Switch default conversation partner (compose auto-uses this)
+node tools/persona-editor.mjs user set-default alice mom
+
+# Clear default (revert to anonymous)
+node tools/persona-editor.mjs user set-default alice none
+
+# Delete a user
+node tools/persona-editor.mjs user remove alice bestfriend
+```
+
+**Usage in Claude Code:**
+
+After setting up the default user, every conversation automatically uses it — no extra steps needed. `compose` auto-reads `default_user` from `config.json` and injects a `<user>` tag into the memory context.
+
+To temporarily switch identity, you can manually specify in the compose command:
+
+```bash
+node tools/session-manager.mjs compose alice "How have you been?" --user bestfriend
+```
+
+**Priority:** `--user` parameter > `config.default_user` > anonymous `"user"`
+
 ### Chat with Your Persona
 
 Once created, invoke directly in Claude Code:
@@ -134,7 +222,16 @@ The sunset over Erhai Lake was beautiful. Mom took so many photos.
 
 **Key design**: Memories are not isolated files. The `links` field connects them into a **memory graph**. During retrieval, the system can "walk" along links to find semantically related memories that share no keywords.
 
-### Memory Retrieval: Four-Layer Pipeline
+### Memory Retrieval: Four-Layer Pipeline + log(n) Adaptive Scaling
+
+The total number of injected memories scales **logarithmically** with memory store size: seeds (fixed 5) + walk (~log₂(n)).
+
+| Memory store size n | log₂(n) | seeds | walk | total injected |
+|---------------------|---------|-------|------|----------------|
+| 50 | 6 | 5 | ~6 | ~11 |
+| 200 | 8 | 5 | ~8 | ~13 |
+| 1000 | 10 | 5 | ~10 | ~15 |
+| 10000 | 14 | 5 | ~14 | ~19 |
 
 ```
 User message: "Do you remember traveling with your mom?"
@@ -153,7 +250,7 @@ User message: "Do you remember traveling with your mom?"
   │       + 0.15 × importance             │
   │       + 0.10 × recency                │
   │       + 0.15 × type_boost             │
-  │ Select top-8                          │
+  │ Select top-5 as seeds                 │
   └──────────────┬───────────────────────┘
                  │
                  ▼
@@ -165,15 +262,19 @@ User message: "Do you remember traveling with your mom?"
                  │
                  ▼
   ┌──────────────────────────────────────┐
-  │ Layer 4: Link Walking                 │
-  │ From top-8, expand 3-5 linked memories│
-  │ Token budget ~800                     │
+  │ Layer 4: Multi-Level Link Walking     │
+  │ From 5 seeds, BFS depth = log₂(n)    │
+  │ Score decays multiplicatively per hop │
+  │ Softmax sampling ~log₂(n) memories   │
+  │ Token budget ~2000                    │
   └──────────────┬───────────────────────┘
                  │
                  ▼
-         Injected as <memory> tags
+         Injected as <memory> + <user> tags
          Fed to Claude for response generation
 ```
+
+**Why log(n)**: Walk depth log₂(n) ensures any node in the graph is theoretically reachable (like a small-world network). More memories means more injection, but growth is slow — context never explodes.
 
 ### Conversational Memory Writing
 
@@ -213,7 +314,7 @@ effective    = importance × (floor + (1 - floor) × decay_factor)
 
 | importance | Day 0 | 1 Year | 10 Years | Note |
 |------------|-------|--------|----------|------|
-| 0.95 | 0.950 | 0.904 | 0.866 | Core memory, retains 91% after a year |
+| 0.95 | 0.950 | 0.904 | 0.866 | Core memory, retains 91% after 10 years |
 | 0.50 | 0.500 | 0.313 | 0.159 | Ordinary memory, gradually fades |
 | 0.20 | 0.200 | 0.104 | 0.025 | Trivial detail, near zero after years |
 
@@ -277,16 +378,16 @@ Candidate memory     → frozen MiniLM → 384d ─┘
 - **Training time**: < 5 seconds per session, runs async after each conversation
 
 ```bash
-# Check training status
-python3 model/trainer.py status ~/.claude/distill_me/alice
+# Check training data statistics
+python3 model/train_linker.py ~/.claude/distill_me/alice --info
 
-# Manually trigger training
-python3 model/trainer.py train ~/.claude/distill_me/alice
+# Manually trigger training (requires at least 20 feedback entries)
+python3 model/train_linker.py ~/.claude/distill_me/alice --epochs 20
 ```
 
 ---
 
-## Tool Reference
+## Full Tool Reference
 
 ### Node.js Tools (`tools/`)
 
@@ -295,14 +396,31 @@ python3 model/trainer.py train ~/.claude/distill_me/alice
 | `node tools/ingest.mjs scan <folder>` | Scan data folder, report file statistics |
 | `node tools/ingest.mjs init <slug>` | Initialize persona directory structure |
 | `node tools/ingest.mjs read-chunk <file> [--offset N] [--limit N]` | Read file chunks for LLM analysis |
-| `node tools/memory-writer.mjs <slug> <category> <topic> --body "..." [--type T] [--importance N] [--tags "a,b"]` | Create memory file |
+| `node tools/ingest.mjs diff <slug> <data-folder>` | Find new/changed files (hash comparison) |
+| `node tools/ingest.mjs mark-done <slug> <data-folder>` | Record current files as processed |
+| `node tools/persona-editor.mjs profile get <slug> [--path "field"]` | Read profile (full or specific field) |
+| `node tools/persona-editor.mjs profile set <slug> --path "field" --value V` | Modify profile field + auto-regenerate SKILL.md |
+| `node tools/persona-editor.mjs profile set <slug> --json '{...}'` | Deep-merge JSON into profile |
+| `node tools/persona-editor.mjs profile add-facet <slug> <key> --json '{...}'` | Add identity facet |
+| `node tools/persona-editor.mjs profile remove-facet <slug> <key>` | Remove identity facet |
+| `node tools/persona-editor.mjs memory add <slug> <cat> <topic> --body "..." [--importance N] [--tags "a,b"]` | Create memory + auto-rebuild index |
+| `node tools/persona-editor.mjs memory edit <slug> <id> [--body "..."] [--importance N]` | Edit memory + auto-rebuild index |
+| `node tools/persona-editor.mjs memory delete <slug> <id>` | Delete memory + auto-rebuild index |
+| `node tools/persona-editor.mjs memory list <slug> [--category C] [--sort importance\|created]` | List memories |
+| `node tools/persona-editor.mjs memory show <slug> <id>` | View full memory content |
+| `node tools/persona-editor.mjs user add <slug> <id> [--name N] [--relation R] [--notes N]` | Register conversation partner |
+| `node tools/persona-editor.mjs user list <slug>` | List registered conversation partners |
+| `node tools/persona-editor.mjs user remove <slug> <id>` | Remove conversation partner |
+| `node tools/persona-editor.mjs user set-default <slug> <id\|none>` | Set/clear default conversation partner |
+| `node tools/persona-editor.mjs sync <slug>` | Manual full sync (index + SKILL) |
+| `node tools/memory-writer.mjs <slug> <category> <topic> --body "..." [--type T] [--importance N] [--tags "a,b"]` | Low-level: create memory file (no sync) |
 | `node tools/memory-retriever.mjs <slug> "<query>" [--top-k 8] [--phase start\|middle\|deep]` | Retrieve memories |
 | `node tools/memory-walker.mjs <slug> --seeds "id1,id2" [--max-nodes 5] [--min-strength 0.15]` | Walk memory links |
-| `node tools/persona-generator.mjs <slug>` | Generate SKILL.md |
+| `node tools/persona-generator.mjs <slug>` | Generate SKILL.md + identity files |
 | `node tools/persona-generator.mjs <slug> --summary` | Output personality summary |
-| `node tools/session-manager.mjs compose <slug> "<msg>" [--phase P]` | Compose memory-injected prompt |
+| `node tools/session-manager.mjs compose <slug> "<msg>" [--phase P] [--user <id>]` | Compose memory-injected prompt (with user identity) |
 | `node tools/session-manager.mjs extract <slug> "<response>"` | Extract `<new-memory>` from AI response |
-| `node tools/session-manager.mjs save-memory <slug> <cat> <topic> "<body>"` | Manually save conversation memory |
+| `node tools/session-manager.mjs save-memory <slug> <cat> <topic> "<body>"` | Save conversation memory |
 | `node tools/session-manager.mjs rebuild-index <slug>` | Rebuild FAISS index and links |
 | `node tools/session-manager.mjs log-feedback <slug> "<retrieved>" "<used>"` | Log training feedback |
 | `node tools/memory-consolidator.mjs stats <slug>` | Memory statistics |
@@ -315,10 +433,11 @@ python3 model/trainer.py train ~/.claude/distill_me/alice
 |---------|-------------|
 | `python3 model/embedder.py build <memories_dir> <output_dir>` | Build FAISS vector index |
 | `python3 model/embedder.py query <dir> "<query>" [--top-k 50]` | Query vector index |
+| `python3 model/embed_daemon.py [--socket /tmp/distillme_embed.sock]` | Start embedding daemon (auto-managed, usually no need to start manually) |
 | `python3 model/linker.py info` | Print model parameter info |
 | `python3 model/linker.py rerank <persona_dir>` | Model re-ranking (JSON via stdin) |
-| `python3 model/trainer.py train <persona_dir> [--epochs 3]` | Online training |
-| `python3 model/trainer.py status <persona_dir>` | Check training status |
+| `python3 model/train_linker.py <persona_dir> [--epochs 20] [--lr 1e-3]` | Train linker from feedback log |
+| `python3 model/train_linker.py <persona_dir> --info` | Check training data statistics |
 | `python3 model/cold_start.py init-weights` | Test cold start initialization |
 | `python3 model/cold_start.py generate-links <persona_dir>` | Generate heuristic memory links |
 
@@ -336,8 +455,12 @@ All data is stored locally. Nothing is uploaded.
 ├── index_flat.faiss       # Flat index copy (for reconstruct)
 ├── index_meta.json        # Vector ID → memory file path mapping
 ├── graph_cache.json       # Graph cache (O(1) load, avoids per-file scan)
+├── identities/            # Identity config files (loaded on demand)
+│   ├── phd_student.md
+│   └── ...
 ├── model/
-│   └── linker_weights.pt  # Trained MLP weights
+│   ├── linker_weights.pt  # Trained MLP weights
+│   └── train_meta.json    # Latest training metadata
 ├── memories/              # Hierarchical memory folders
 │   ├── identity/
 │   ├── relationships/
@@ -413,6 +536,8 @@ All data is stored locally. Nothing is uploaded.
 
 Typical retrieval latency for 10K memories: < 200ms (first load ~2-3s for model initialization).
 
+**Embedding daemon**: On first invocation, `embed_daemon.py` starts automatically and stays resident via Unix socket, eliminating the ~13s Python cold-start overhead per call. Multiple Node processes share a single daemon.
+
 ---
 
 ## Project Structure
@@ -420,8 +545,8 @@ Typical retrieval latency for 10K memories: < 200ms (first load ~2-3s for model 
 ```
 distill-me/
 ├── SKILL.md                           # Claude Code skill entry point
-├── README.md                          # This file (Chinese)
-├── README_EN.md                       # English documentation
+├── README.md                          # Chinese documentation
+├── README_EN.md                       # This file
 ├── package.json                       # Node.js dependencies
 ├── requirements.txt                   # Python dependencies
 ├── .gitignore
@@ -433,16 +558,19 @@ distill-me/
 │   └── conversation-system.md         # Runtime system prompt template
 ├── tools/
 │   ├── ingest.mjs                     # Data scanning and initialization
-│   ├── memory-writer.mjs              # Memory file creation
+│   ├── persona-editor.mjs             # Unified edit entry (profile + memories + auto-sync)
+│   ├── persona-generator.mjs          # Generate SKILL.md + identity files
+│   ├── memory-writer.mjs              # Memory file create/edit/delete
 │   ├── memory-retriever.mjs           # Four-layer retrieval pipeline
 │   ├── memory-walker.mjs              # Link walking + graph cache
 │   ├── memory-consolidator.mjs        # Memory pruning/merging/stats
-│   ├── persona-generator.mjs          # Generate profile + SKILL.md
 │   └── session-manager.mjs            # Conversation mgmt, memory extraction, index rebuild
 ├── model/
 │   ├── embedder.py                    # sentence-transformers + FAISS
+│   ├── embed_daemon.py                # Embedding daemon (eliminates cold start)
+│   ├── embed-client.mjs               # Node-side daemon client
 │   ├── linker.py                      # 410K MLP memory scorer
-│   ├── trainer.py                     # Online training
+│   ├── train_linker.py                # Linker training script
 │   └── cold_start.py                  # Cold start + heuristic linking
 ├── lib/
 │   ├── memory-format.mjs              # YAML+MD parser
@@ -470,10 +598,10 @@ distill-me/
               ┌────────────▼────────────┐
               │  Conversation (ongoing)  │
               │                          │
-              │  User message            │
-              │    → memory-retriever    │  O(log n) retrieval
-              │    → memory-walker       │  link walking
-              │    → session-manager     │  compose <memory> prompt
+              │  User message + identity │
+              │    → memory-retriever    │  5 seeds (FAISS + heuristic)
+              │    → memory-walker       │  log₂(n) level BFS walk
+              │    → session-manager     │  compose <user> + <memory>
               │    → Claude response     │
               │    → extract <new-memory>│  selective (compressed summary)
               │    → log-feedback        │  record training data
@@ -482,11 +610,11 @@ distill-me/
               ┌────────────▼────────────┐
               │  Maintenance (periodic)  │
               │                          │
-              │  consolidator stats      │  check memory health
+              │  persona-editor          │  edit profile/memories/users
+              │  ingest diff + update    │  incremental data import
               │  consolidator prune      │  prune decayed memories
               │  consolidator merge      │  merge similar memories
-              │  rebuild-index           │  rebuild index
-              │  trainer train           │  online model training
+              │  train_linker.py         │  train linker model
               └─────────────────────────┘
 ```
 
@@ -516,11 +644,21 @@ Temporary data is automatically cleaned up after tests.
 - Persona quality depends on the richness of input data — more data means a more well-rounded persona
 - The online model needs 3-5 conversations before producing meaningful improvements
 - Memory extraction relies on LLM analysis and may miss or misinterpret information
-- First load of the sentence-transformers model takes a few seconds
+- First load of the sentence-transformers model takes a few seconds (subsequent calls use the resident daemon for millisecond-level response)
 - All data is stored purely locally — no network transmission
 
 ## Version
 
+- **v1.2.0** (2026-04-03/04): Embedding daemon + persona hot-update + adaptive retrieval
+  - Embedding daemon (`embed_daemon.py`): Unix socket resident process, eliminates ~13s/call Python cold start, compose latency drops from 79s to ~6s
+  - `persona-editor.mjs`: Unified profile + memory + user editing CLI with automatic cascade updates after each change
+  - Conversation partner identity: `user add/list/remove` to register partners, `compose --user <id>` injects identity info, affects tone and memory retrieval
+  - log(n) adaptive retrieval: seeds fixed at 5 + multi-level BFS walk depth log₂(n), total injected memories scale logarithmically with store size
+  - Incremental update: `ingest.mjs diff/mark-done` detects new/changed files via SHA-256 hash, `/distill-me update` for one-command update
+  - `train_linker.py`: Train linker MLP from feedback log (supports class-weighted BCE, early stopping)
+  - Linker compatible with new memories: input is embedding pairs not fixed IDs, new memories are immediately scorable without retraining
+  - Speaking style parameterization: `profile.speaking_style` controls length limits, decision tree, silence behaviors
+  - Identity system externalized: facet configs moved from inline SKILL.md to `identities/*.md` loaded on demand
 - **v1.1.0** (2026-04-03): Identity system + speaking philosophy
   - Identity system: Each persona can define multiple social identities (PhD student, streamer, project leader, etc.), with support for inheritance (`variant_of`) and mixing (`mix_of`)
   - Speaking philosophy: Memories are subconscious, not scripts — injected memories shape behavior but are never recited; most irrelevant memories should be silently ignored

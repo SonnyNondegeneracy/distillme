@@ -82,33 +82,57 @@ async function mergeIntoExisting(existingPath, existingMeta, existingBody, newBo
  * @returns {Object} { memories_xml, retrieved_ids, walked_ids }
  */
 export async function composeMemoryContext(slug, userMessage, options = {}) {
-  const { phase = 'middle', topK = 8, walkMaxNodes = 5, walkTokenBudget = 800 } = options;
+  const { phase = 'middle' } = options;
+  let user = options.user || 'user';
 
-  // Step 1: Retrieve top memories
-  const retrieved = await retrieveMemories(slug, userMessage, { topK, phase });
+  // Resolve user: explicit --user > config.default_user > "user"
+  if (user === 'user') {
+    try {
+      const config = JSON.parse(await readFile(join(personaDir(slug), 'config.json'), 'utf-8'));
+      if (config.default_user) user = config.default_user;
+    } catch { /* no config */ }
+  }
+
+  // Load user profile if available
+  let userContext = '';
+  if (user !== 'user') {
+    try {
+      const config = JSON.parse(await readFile(join(personaDir(slug), 'config.json'), 'utf-8'));
+      const userInfo = (config.users || []).find(u => u.id === user);
+      if (userInfo) {
+        userContext = `<user id="${user}" name="${userInfo.name || user}"${userInfo.relation ? ` relation="${userInfo.relation}"` : ''}${userInfo.notes ? ` notes="${userInfo.notes}"` : ''} />`;
+      }
+    } catch { /* no config or no users */ }
+  }
+
+  // Step 1: Retrieve seed memories (top similarity)
+  // If user is known, prepend their name to query for better relationship memory retrieval
+  const queryText = user !== 'user' ? `[${user}] ${userMessage}` : userMessage;
+  const retrieved = await retrieveMemories(slug, queryText, { phase });
+  const totalMemories = retrieved._totalMemories || retrieved.length;
 
   // Step 2: Format retrieved memories as XML
   const retrievedXml = retrieved.map(m =>
     `<memory id="${m.id}" category="${(m.abs_path || '').split('/memories/')[1]?.split('/')[0] || m.type || 'semantic'}" importance="${m.importance || 0.5}" score="${m.final_score?.toFixed(3) || '0'}">\n${m.full_body || m.body_preview}\n</memory>`
   ).join('\n\n');
 
-  // Step 3: Walk links from retrieved memories
+  // Step 3: Walk links from retrieved memories, depth scales as log(n)
   const seedIds = retrieved.map(m => m.id);
   const seedScores = new Map(retrieved.map(m => [m.id, m.final_score || 0.5]));
   const walked = await walkMemories(slug, seedIds, seedScores, {
-    maxNodes: walkMaxNodes,
-    tokenBudget: walkTokenBudget,
+    totalMemories,
   });
   const walkedXml = formatWalkedMemories(walked);
 
   // Combine
-  const allXml = [retrievedXml, walkedXml].filter(Boolean).join('\n\n');
+  const allXml = [userContext, retrievedXml, walkedXml].filter(Boolean).join('\n\n');
 
   return {
     memories_xml: allXml,
     retrieved_ids: seedIds,
     walked_ids: walked.map(w => w.id),
     total_memories: retrieved.length + walked.length,
+    user,
   };
 }
 
@@ -262,7 +286,7 @@ if (process.argv[1] && process.argv[1].endsWith('session-manager.mjs')) {
   const args = process.argv.slice(2);
   if (args.length < 1) {
     console.log(`Usage:
-  node session-manager.mjs compose <slug> "<message>" [--phase start|middle|deep]
+  node session-manager.mjs compose <slug> "<message>" [--phase start|middle|deep] [--user <id>]
   node session-manager.mjs extract <slug> "<ai-response>"
   node session-manager.mjs save-memory <slug> "<category>" "<topic>" "<body>" [--importance 0.6]
   node session-manager.mjs log-feedback <slug> "<retrieved>" "<used>"
@@ -276,10 +300,12 @@ if (process.argv[1] && process.argv[1].endsWith('session-manager.mjs')) {
     const slug = args[1];
     const message = args[2];
     let phase = 'middle';
+    let user = 'user';
     for (let i = 3; i < args.length; i++) {
       if (args[i] === '--phase' && args[i + 1]) phase = args[++i];
+      if (args[i] === '--user' && args[i + 1]) user = args[++i];
     }
-    composeMemoryContext(slug, message, { phase }).then(r => {
+    composeMemoryContext(slug, message, { phase, user }).then(r => {
       console.log(JSON.stringify(r, null, 2));
     }).catch(e => {
       console.error(e.message);

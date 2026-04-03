@@ -165,47 +165,26 @@ async function modelRerank(personaPath, query, candidateIds) {
 }
 
 /**
- * Softmax-weighted sampling without replacement.
- * Used to inject controlled randomness into retrieval —
- * same query won't always return the exact same set.
- */
-function weightedSample(candidates, n, temperature = 0.8) {
-  if (candidates.length <= n) return candidates;
-  const scores = candidates.map(c => c.final_score / temperature);
-  const maxScore = Math.max(...scores);
-  const exps = scores.map(s => Math.exp(s - maxScore));
-  const sumExp = exps.reduce((a, b) => a + b, 0);
-  const probs = exps.map(e => e / sumExp);
-
-  const sampled = [];
-  const remaining = candidates.map((c, i) => ({ item: c, prob: probs[i] }));
-  for (let k = 0; k < n && remaining.length > 0; k++) {
-    const totalProb = remaining.reduce((s, r) => s + r.prob, 0);
-    let r = Math.random() * totalProb;
-    let idx = 0;
-    for (let i = 0; i < remaining.length; i++) {
-      r -= remaining[i].prob;
-      if (r <= 0) { idx = i; break; }
-    }
-    sampled.push(remaining[idx].item);
-    remaining.splice(idx, 1);
-  }
-  return sampled;
-}
-
-/**
  * Main retrieval function.
+ *
+ * Retrieval scales with memory count:
+ *   - Seeds (FAISS top similarity): fixed 3-5
+ *   - Walk depth: ceil(log2(n))
+ *   - Total returned: ~ceil(log2(n)) + seeds
  *
  * @param {string} slug - Persona slug
  * @param {string} query - User query
  * @param {Object} options
- * @param {number} [options.topK=8] - Number of results to return
+ * @param {number} [options.seedK=5] - Number of seed memories (FAISS top similarity)
  * @param {string} [options.phase='middle'] - Conversation phase
- * @returns {Array} Top-K memories with scores
+ * @returns {Array} Memories with scores, count scales as ~log(n)
  */
-export async function retrieveMemories(slug, query, { topK = 8, phase = 'middle' } = {}) {
+export async function retrieveMemories(slug, query, { seedK = 5, topK, phase = 'middle' } = {}) {
   const pDir = personaDir(slug);
   const faissK = 50; // Fetch more for heuristic re-scoring
+
+  // Support legacy topK parameter (treat as seedK for backwards compat)
+  if (topK && !arguments[2]?.seedK) seedK = Math.min(topK, 8);
 
   // Step 1: FAISS query + keyword search in parallel
   let faissResults = [];
@@ -233,6 +212,9 @@ export async function retrieveMemories(slug, query, { topK = 8, phase = 'middle'
     }
   }
 
+  // Total memory count for log-scaling
+  const totalMemories = candidates.length > 0 ? Math.max(candidates.length, faissResults.length) : 0;
+
   // Step 2: Heuristic scoring
   for (const c of candidates) {
     c.heuristic_score = heuristicScore(c, query, phase);
@@ -256,17 +238,14 @@ export async function retrieveMemories(slug, query, { topK = 8, phase = 'middle'
     }
   }
 
-  // Step 4: Deterministic top-3 + weighted random sampling for the rest
-  // Ensures high-confidence memories always appear, while adding
-  // associative randomness — like how human recall works.
+  // Step 4: Select seeds — deterministic top by similarity
+  // Seeds are the anchor points for graph walk; keep them small and high-quality
   candidates.sort((a, b) => b.final_score - a.final_score);
-  const guaranteed = candidates.slice(0, 3);
-  const pool = candidates.slice(3, topK * 3); // wider pool for sampling
-  const sampledRest = weightedSample(pool, topK - 3, 0.8);
-  const topResults = [...guaranteed, ...sampledRest];
+  const actualSeedK = Math.min(seedK, candidates.length);
+  const seeds = candidates.slice(0, actualSeedK);
 
-  // Step 5: Load full memory content for top results
-  for (const result of topResults) {
+  // Step 5: Load full memory content for seeds
+  for (const result of seeds) {
     if (result.abs_path) {
       try {
         const mem = await readMemory(result.abs_path);
@@ -279,7 +258,10 @@ export async function retrieveMemories(slug, query, { topK = 8, phase = 'middle'
     }
   }
 
-  return topResults;
+  // Attach totalMemories for downstream walk scaling
+  seeds._totalMemories = totalMemories;
+
+  return seeds;
 }
 
 // CLI mode

@@ -12,10 +12,10 @@
  *   node memory-writer.mjs <persona-slug> <category> <topic> --body "..." [--type episodic] [--importance 0.8] [--tags tag1,tag2]
  */
 
-import { mkdir, readdir } from 'fs/promises';
+import { mkdir, readdir, readFile, unlink } from 'fs/promises';
 import { join } from 'path';
-import { writeMemory } from '../lib/memory-format.mjs';
-import { memoryId, memoriesDir, MEMORY_CATEGORIES } from '../lib/utils.mjs';
+import { readMemory, writeMemory } from '../lib/memory-format.mjs';
+import { memoryId, memoriesDir, personaDir, MEMORY_CATEGORIES } from '../lib/utils.mjs';
 
 /**
  * Create a new memory file.
@@ -100,6 +100,84 @@ export async function createMemories(slug, memorySpecs) {
     results.push(result);
   }
   return results;
+}
+
+/**
+ * Resolve a memory ID to its file path using index_meta.json.
+ * Falls back to scanning memory files if index doesn't exist.
+ */
+export async function resolveMemoryPath(slug, targetId) {
+  const pDir = personaDir(slug);
+  const metaPath = join(pDir, 'index_meta.json');
+  try {
+    const metas = JSON.parse(await readFile(metaPath, 'utf-8'));
+    const entry = metas.find(m => m.id === targetId);
+    if (entry && entry.abs_path) return entry.abs_path;
+  } catch {
+    // No index, fall through to scan
+  }
+  // Scan memory files
+  return scanForMemory(memoriesDir(slug), targetId);
+}
+
+async function scanForMemory(dir, targetId) {
+  const { readdir: rd } = await import('fs/promises');
+  const entries = await rd(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const found = await scanForMemory(fullPath, targetId);
+      if (found) return found;
+    } else if (entry.name.endsWith('.md')) {
+      try {
+        const { meta } = await readMemory(fullPath);
+        if (meta.id === targetId) return fullPath;
+      } catch { /* skip */ }
+    }
+  }
+  return null;
+}
+
+/**
+ * Edit an existing memory by ID.
+ *
+ * @param {string} slug - Persona slug
+ * @param {string} targetId - Memory ID (e.g., "exp-summer-trip-001")
+ * @param {Object} updates - Fields to update
+ * @param {string} [updates.body] - New body text (replaces entirely)
+ * @param {number} [updates.importance] - New importance
+ * @param {string[]} [updates.tags] - New tags (replaces entirely)
+ * @param {string} [updates.type] - New type
+ * @returns {Object} { id, filePath, updated: true }
+ */
+export async function editMemory(slug, targetId, updates) {
+  const filePath = await resolveMemoryPath(slug, targetId);
+  if (!filePath) throw new Error(`Memory not found: ${targetId}`);
+
+  const { meta, body } = await readMemory(filePath);
+  const newBody = updates.body !== undefined ? updates.body : body;
+  if (updates.importance !== undefined) meta.importance = updates.importance;
+  if (updates.tags !== undefined) meta.tags = updates.tags;
+  if (updates.type !== undefined) meta.type = updates.type;
+  meta.updated = new Date().toISOString();
+
+  await writeMemory(filePath, meta, newBody);
+  return { id: targetId, filePath, updated: true };
+}
+
+/**
+ * Delete a memory by ID.
+ *
+ * @param {string} slug - Persona slug
+ * @param {string} targetId - Memory ID
+ * @returns {Object} { id, filePath, deleted: true }
+ */
+export async function deleteMemory(slug, targetId) {
+  const filePath = await resolveMemoryPath(slug, targetId);
+  if (!filePath) throw new Error(`Memory not found: ${targetId}`);
+
+  await unlink(filePath);
+  return { id: targetId, filePath, deleted: true };
 }
 
 // CLI mode

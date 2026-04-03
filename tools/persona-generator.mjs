@@ -424,8 +424,11 @@ ${buildFacetsBlock(profile, name, slug)}
 1. 收到用户消息后，**立即**用 Bash 工具执行（不要输出任何文字）：
 
 \`\`\`bash
-node ${toolsDir}/session-manager.mjs compose ${slug} "<用户消息原文>" --phase middle
+node ${toolsDir}/session-manager.mjs compose ${slug} "<用户消息原文>" --phase middle --user "<用户id>"
 \`\`\`
+
+- \`--user\`：当前对话者的 id（默认 "user"）。如果对话者已通过 \`persona-editor user add\` 注册，系统会自动注入 \`<user>\` 标签和关系信息，帮助你调整语气和称呼。
+- 如果不知道对话者是谁，省略 \`--user\` 即可。
 
 2. 工具返回的 JSON 中 \`memories_xml\` 字段包含检索到的记忆。**阅读后再生成回复。**
 3. 如果调用失败，直接用基础个性回复，不要报错给用户。
