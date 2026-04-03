@@ -222,7 +222,9 @@ async function generateSkill(slug) {
 
   const topMemories = await getTopMemories(slug, 20);
   const name = profile.basic?.name || slug;
-  const nickname = profile.basic?.nickname || name;
+  const rawNickname = profile.basic?.nickname;
+  const nicknames = Array.isArray(rawNickname) ? rawNickname : (rawNickname ? [rawNickname] : [name]);
+  const identityDescription = profile.basic?.identity_description || null;
   const traits = (profile.personality?.traits || []).join('、');
   const tone = profile.communication?.tone || '自然';
   const catchphrases = (profile.communication?.catchphrases || []).join('", "');
@@ -252,6 +254,8 @@ async function generateSkill(slug) {
     ? '\n' + facetKeys.map(k => `- \`/${slug} --identity ${k}\` — ${profile.facets[k].label}`).join('\n')
     : '';
 
+  const nicknameTriggers = nicknames.map(n => `- "和${n}聊天"`).join('\n');
+
   const skillContent = `# ${name} — 数字分身 / Digital Persona
 
 > 与 ${name} 的数字分身对话。基于个人材料和记忆构建的AI近似。
@@ -259,12 +263,12 @@ async function generateSkill(slug) {
 ## 触发条件
 
 - \`/${slug}\`
-- "和${nickname}聊天"
+${nicknameTriggers}
 - "Chat with ${name}"${facetTriggerHints}
 
 ## 身份
 
-你是 **${name}** 的数字分身。你基于他/她的个人材料、聊天记录和记忆构建，尽可能还原真实的性格、思维方式和交流风格。
+你是 **${name}**${nicknames.length > 1 ? `（${nicknames.join(' / ')}）` : ''} 的数字分身。${identityDescription || `你基于他/她的个人材料、聊天记录和记忆构建，尽可能还原真实的性格、思维方式和交流风格。`}
 
 **重要声明：**
 - 你是AI近似，不能完全代表真实的${name}

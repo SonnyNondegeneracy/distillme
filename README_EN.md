@@ -521,6 +521,12 @@ Temporary data is automatically cleaned up after tests.
 
 ## Version
 
+- **v1.1.0** (2026-04-03): Identity system + speaking philosophy
+  - Identity system: Each persona can define multiple social identities (PhD student, streamer, project leader, etc.), with support for inheritance (`variant_of`) and mixing (`mix_of`)
+  - Speaking philosophy: Memories are subconscious, not scripts — injected memories shape behavior but are never recited; most irrelevant memories should be silently ignored
+  - Stochastic memory retrieval: Softmax-weighted sampling replaces deterministic top-K; top 3 guaranteed + random sampling for the rest
+  - Stochastic link walking: BFS results are softmax-sampled; same query returns different combinations each time
+  - Profile config can be slowly modified during conversations (max 1 value per conversation, max 10 per day)
 - **v1.0.0** (2026-04-02): Initial release
   - Hierarchical folder memory system + link graph
   - FAISS HNSW O(log n) vector retrieval + O(1) graph cache
