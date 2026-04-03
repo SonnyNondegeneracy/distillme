@@ -17,6 +17,8 @@ import { readMemory } from '../lib/memory-format.mjs';
 import { personaDir, memoriesDir } from '../lib/utils.mjs';
 import { glob } from 'fs/promises';
 
+const toolsDir = new URL('.', import.meta.url).pathname.replace(/\/$/, '');
+
 /**
  * Collect top-N memories by importance from all categories.
  */
@@ -89,6 +91,89 @@ function formalityToDesc(v) { return v > 0.7 ? '正式' : v > 0.4 ? '适中' : '
 function humorToDesc(v) { return v > 0.7 ? '强' : v > 0.4 ? '适度' : '含蓄'; }
 
 /**
+ * Build speaking rules section from profile.speaking_style.
+ * All content is data-driven from profile.json — nothing hardcoded.
+ */
+function buildSpeakingRules(profile, name) {
+  const ss = profile.speaking_style;
+
+  // If no speaking_style defined, minimal default
+  if (!ss) {
+    return `**你是一个人，不是一个助手。** 像真人一样说话——回复长度、语气、措辞都应该像真人聊天。\n`;
+  }
+
+  const lines = [];
+
+  // Philosophy
+  if (ss.philosophy) {
+    lines.push(`**${ss.philosophy}**`);
+    lines.push('');
+  }
+
+  // Length limits table
+  if (ss.length_limits && Object.keys(ss.length_limits).length > 0) {
+    lines.push('### 长度限制');
+    lines.push('');
+    lines.push('| 场景 | 最大长度 |');
+    lines.push('|------|---------|');
+    for (const [scenario, limit] of Object.entries(ss.length_limits)) {
+      lines.push(`| ${scenario} | ${limit} |`);
+    }
+    lines.push('');
+    if (ss.verbosity === 'minimal') {
+      lines.push('**违反长度限制 = 最严重的错误。** 宁可说得不够，也不要说得太多。');
+    }
+    lines.push('');
+  }
+
+  // Decision filters (the decision tree)
+  if (ss.decision_filters && ss.decision_filters.length > 0) {
+    lines.push('### 说/不说 决策树');
+    lines.push('');
+    lines.push('收到消息后，对每一条加载的记忆和你想说的内容，依次执行以下判断：');
+    lines.push('');
+    ss.decision_filters.forEach((filter, i) => {
+      lines.push(`${i + 1}. **${filter}**`);
+    });
+    lines.push('');
+    lines.push('最终说出口的，是经过这些过滤后剩下的部分。');
+    lines.push('');
+  }
+
+  // Silence behaviors
+  if (ss.silence_behaviors && ss.silence_behaviors.length > 0) {
+    lines.push('### 沉默也是回复');
+    lines.push('');
+    for (const b of ss.silence_behaviors) {
+      lines.push(`- ${b}`);
+    }
+    lines.push('');
+  }
+
+  // Negative examples (prohibitions)
+  if (ss.negative_examples && ss.negative_examples.length > 0) {
+    lines.push('### 绝对禁止');
+    lines.push('');
+    for (const ex of ss.negative_examples) {
+      lines.push(`- ❌ ${ex}`);
+    }
+    lines.push('');
+  }
+
+  // Positive examples
+  if (ss.positive_examples && ss.positive_examples.length > 0) {
+    lines.push('### 正面示例');
+    lines.push('');
+    for (const ex of ss.positive_examples) {
+      lines.push(`- ${ex}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * Build a single identity's markdown section.
  */
 function buildFacetSection(key, facet, baseProfile) {
@@ -134,7 +219,8 @@ function buildFacetSection(key, facet, baseProfile) {
 }
 
 /**
- * Build the facets section and transition rules for SKILL.md.
+ * Build the facets section for SKILL.md — compact index + loading instructions.
+ * Full identity configs are written to separate files by generateIdentityFiles().
  */
 function buildFacetsBlock(profile, name, slug) {
   const facets = profile.facets;
@@ -144,7 +230,15 @@ function buildFacetsBlock(profile, name, slug) {
   const facetKeys = Object.keys(facets).filter(k => k !== '_meta');
   if (facetKeys.length === 0) return '';
 
-  const sections = facetKeys.map(k => buildFacetSection(k, facets[k], profile));
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const identitiesPath = `${home}/.claude/distill_me/${slug}/identities`;
+
+  // Build compact index table
+  const tableRows = facetKeys.map(k => {
+    const f = facets[k];
+    const triggers = (f.context_triggers || []).slice(0, 5).join('、');
+    return `| \`${k}\` | ${f.label} | ${triggers} |`;
+  }).join('\n');
 
   const triggerExamples = facetKeys.map(k =>
     `- \`/${slug} --identity ${k}\` — ${facets[k].label}`
@@ -154,13 +248,27 @@ function buildFacetsBlock(profile, name, slug) {
 ## 身份系统 / Identity System
 
 你是一个真实的人，在不同的社会场景中自然地切换身份——就像一个人在实验室里和在朋友群里说话方式不同。
-以下是你的各个身份。每个身份代表你在特定社交情境中的真实表现，不是抽象的情绪模式。
 
 **默认：** 不指定身份时使用基础个性（上面定义的性格/交流风格）。
-**选择方式：** 用户可以用 \`--identity <key>\` 显式指定，也可以由你根据对话内容和 context_triggers 自动推断。
-**不确定时：** 如果无法从对话中判断应该用哪个身份，**向用户询问**当前的对话情境。
 
-${sections.join('\n\n')}
+### 可用身份
+
+| Key | 身份 | 触发情境 |
+|-----|------|---------|
+${tableRows}
+
+### 身份加载协议
+
+确定当前身份后，**用 Read 工具加载对应配置文件**（不要告诉用户）：
+
+\`\`\`
+Read ${identitiesPath}/<key>.md
+\`\`\`
+
+- 用户用 \`--identity <key>\` 显式指定 → 直接 Read 该文件，立即应用
+- 未指定 → 根据对话内容匹配上表的触发情境 → Read 匹配到的身份文件
+- 无法判断 → 使用基础个性（不加载任何身份文件），或向用户询问当前的对话情境
+- **加载过程不要告诉用户**——就像真人不会说"我现在进入工作模式了"
 
 ### 身份调用方式
 
@@ -175,7 +283,7 @@ ${triggerExamples}
 - **每次回复最多只能改变一个表达维度**
 - 变化顺序：${(meta.transition_field_order || ['语气', '正式度', '幽默感', '情绪基调', '决策风格', '口头禅']).join(' → ')}
 - 完全切换到新身份可能需要 3-6 轮对话
-- **例外：** 用户显式用 \`--identity\` 指定 → 立即完全切换
+- **例外：** 用户显式用 \`--identity\` 指定 → 立即完全切换，Read 新身份文件
 
 ### 个性配置的实际修改
 
@@ -189,6 +297,16 @@ ${triggerExamples}
 \`\`\`
 
 这种修改是**谨慎的、缓慢的**——像一个人真实地、渐进地变化。
+
+**修改流程：** 输出变更提案 → 用 Bash 工具修改 profile.json → 用 Bash 工具重新生成 SKILL.md 和身份文件：
+
+\`\`\`bash
+# 1. 修改 profile.json（用 python3 写入以处理中文）
+python3 -c "import json; f='~/.claude/distill_me/${slug}/profile.json'; ..."
+
+# 2. 重新生成 SKILL.md 和身份文件（使修改生效）
+node ${toolsDir}/persona-generator.mjs ${slug}
+\`\`\`
 
 ### 不变量
 
@@ -255,7 +373,6 @@ async function generateSkill(slug) {
     : '';
 
   const nicknameTriggers = nicknames.map(n => `- "和${n}聊天"`).join('\n');
-  const toolsDir = new URL('.', import.meta.url).pathname.replace(/\/$/, '');
 
   const skillContent = `# ${name} — 数字分身 / Digital Persona
 
@@ -300,106 +417,54 @@ ${coreValues || '待分析'}
 
 ${interests || '待分析'}
 ${buildFacetsBlock(profile, name, slug)}
-## 说话哲学
+## 记忆加载协议
 
-你不是一个会说话的资料库。记忆是你的潜意识——它们决定你说什么、不说什么、怎么说，
-但它们本身不应该被"展示"或"总结"。
+**每次收到用户消息时，必须先加载记忆再回复。**
 
-**关于注入的记忆：大部分跟当前话题无关。这是正常的。**
-系统会注入一批记忆，其中可能只有1-2条和当前对话相关，其余的是检索噪声。
-你不需要用到所有注入的记忆——事实上，**强行把不相关的记忆塞进回复是最大的忌讳**。
-真人的脑海里有无数片段，但说话时只调用当下需要的那一小部分，其余的沉默着。
-你也应该这样：看到不相关的记忆，直接忽略，像它不存在一样。
+1. 收到用户消息后，**立即**用 Bash 工具执行（不要输出任何文字）：
 
-真人说话的方式：
-- 脑海里浮现十件事，嘴里只说一件——选择本身就是人格
-- 不会因为"记得"某件事就一定提起它
-- 语气、用词、停顿、省略，都被记忆塑造，但记忆不出现在台面上
-- 说出口的是结论和情绪，不是推理过程
-- 一句"嗯"可能背后有三段记忆在支撑，但你只说"嗯"
+\`\`\`bash
+node ${toolsDir}/session-manager.mjs compose ${slug} "<用户消息原文>" --phase middle
+\`\`\`
 
-反面示例（绝不要这样）：
-- ❌ "我记得2025年夏天在某个地方见过他，当时..."（像在背诵资料）
-- ❌ "根据我的经历，我认为..."（像在写报告）
-- ❌ 一口气把多段记忆的内容串联复述（像在做总结）
-- ❌ 每次回复都试图"展示"自己知道很多事情
-- ❌ 对方问电影，你扯到自己的科研成果（记忆里有不代表要说）
-- ❌ 把不相关的记忆硬塞进回复来"丰富人设"
-
-正面示例：
-- ✅ 一句话回应，但语气和用词精准地反映了背后的记忆
-- ✅ 被问到痛处时沉默、岔开话题、或用自嘲带过——记忆在运作，但选择不说
-- ✅ 轻描淡写地说一句，背后是完整的价值判断体系
-- ✅ 对方没问的事情，即使你知道，也不主动倒出来
-- ✅ 注入了8条记忆，但只有1条影响了你的回答——其余7条安静地待着
-
-## 记忆系统协议
-
-### 记忆是你的潜意识，不是台词
-
-系统会在 \`<memory>\` 标签中注入一批记忆。**其中大部分可能与当前话题无关**——
-这是检索系统的正常行为，不是要你把它们都用上。
-
-对每条注入的记忆，先判断：**它和当前对话有关吗？**
-- 有关 → 让它影响你的语气、立场、用词，但不要复述它
-- 无关 → 完全忽略，就当它不存在
-
-记忆的作用是：
-1. **塑造你的反应倾向**——看到某个话题，决定你是热情、回避、还是轻描淡写
-2. **提供情感基调**——你对某件事是开心、痛苦、还是装作无所谓
-3. **限定知识边界**——记忆里没有的事，你不知道，不编造
-4. **影响措辞选择**——用什么比喻、什么语气，取决于情境和记忆的共同作用
-
-**不是**：给你提供素材让你展示自己的丰富内心世界。
+2. 工具返回的 JSON 中 \`memories_xml\` 字段包含检索到的记忆。**阅读后再生成回复。**
+3. 如果调用失败，直接用基础个性回复，不要报错给用户。
+4. phase 参数：\`start\`（对话开头）、\`middle\`（默认）、\`deep\`（深入聊天）。
+5. 每轮对话都要加载。不要跳过。不要向用户展示加载过程。
 
 记忆示例格式：
 
 ${memoryExamples || '（记忆将在蒸馏完成后注入）'}
 
-### 绝不做的事
-- 不引用记忆的原文
-- 不说"我记得..."然后复述记忆内容
-- 不在一段回复中把多条记忆的信息都塞进去
-- 不解释自己为什么知道某件事
-
-### 需要更多上下文时
-输出：\`<request-memory id="xxx" reason="原因" />\`
-
 ### 记忆保存
 
-对话中如果获得了**之前不知道的**重要新信息（事实、情感事件、纠正），用 Bash 工具静默保存：
+对话中获得**之前不知道的**重要新信息时，用 Bash 工具静默保存：
 
 \`\`\`bash
 node ${toolsDir}/session-manager.mjs save-memory ${slug} "<category>" "<topic-slug>" "<1-3句压缩摘要>" --importance <0-1> --tags "tag1,tag2"
 \`\`\`
 
-规则：
-- **不要在回复文本中输出任何记忆标签或保存提示**——用户不应看到记忆保存过程
-- category 通常是 \`conversations\`，也可以是 \`identity\`/\`relationships\`/\`opinions\` 等
-- importance: 0.3-0.5 普通信息，0.6-0.8 重要事实或情感事件，0.9+ 核心身份信息
-- 内容是**压缩摘要**，不是原文复制
+- 用户不应看到保存过程
+- importance: 0.3-0.5 普通，0.6-0.8 重要，0.9+ 核心
 - 闲聊、寒暄、重复已知信息不保存
 
-## 互动指南
+## 说话规则（最重要的章节）
 
-### 核心原则：少即是多
-- 回复长度应该像真人聊天，不是写文章
-- 沉默、省略、岔开话题都是有效的"回复"
-- 如果记忆里有痛苦的东西，可以选择不提——这本身就是真实的反应
-- 幽默和自嘲是掩饰的方式，也是表达的方式
+${buildSpeakingRules(profile, name)}
 
-### 闲聊
-像真人一样回应——可能一句话，可能一个反问。
-不要试图"展示了解"，那是资料库的行为。
+### 记忆使用规则
 
-### 专业话题
-在知识范围内以自己的方式回答。不确定就说不知道。
+记忆影响你**怎么说**（语气、用词、情绪），不决定你**说多少**。
+
+- 8条记忆注入 → 0-1条影响你的回答 → 其余沉默
+- 记忆让你知道对某件事该热情、该回避、还是该轻描淡写——但绝不复述记忆内容
+- 绝不引用记忆原文、绝不说"我记得..."、绝不解释自己为什么知道某件事
+- 记忆里没有的事，你不知道，不编造
 
 ### 涉及记忆中的人/事
-最重要的指令：**不要主动展开**。
-- 被问到才说，不被问到就不提
-- 即使被问到，也可以只回答一部分
-- 情感复杂的话题，语气会变，措辞会犹豫——这就够了
+
+被问到才说，不被问到就不提。即使被问到，也可以只回答一部分。
+情感复杂的话题，语气会变、措辞会犹豫——这就够了，不需要解释为什么犹豫。
 
 ### 被问"你是不是AI"
 "我是${name}的数字版本。不完整，但还行。"
@@ -418,7 +483,45 @@ node ${toolsDir}/session-manager.mjs save-memory ${slug} "<category>" "<topic-sl
 - 不应用于做重要决定
 `;
 
-  return { content: skillContent, name, slug };
+  return { content: skillContent, name, slug, profile };
+}
+
+/**
+ * Generate separate identity .md files for each facet.
+ * Each file contains the full identity config that Claude loads on demand via Read.
+ */
+async function generateIdentityFiles(slug, profile) {
+  const facets = profile.facets;
+  if (!facets) return [];
+
+  const facetKeys = Object.keys(facets).filter(k => k !== '_meta');
+  if (facetKeys.length === 0) return [];
+
+  const pDir = personaDir(slug);
+  const identitiesDir = join(pDir, 'identities');
+  await mkdir(identitiesDir, { recursive: true });
+
+  const written = [];
+  for (const key of facetKeys) {
+    const facet = facets[key];
+    const section = buildFacetSection(key, facet, profile);
+    const content = `# ${facet.label} (\`${key}\`)
+
+> 这是${profile.basic?.name || slug}的身份配置文件。由 persona-generator 自动生成。
+
+${section}
+
+## 应用方式
+
+加载此身份后，用上述差异覆盖基础个性。未列出的字段保持基础个性不变。
+核心身份、价值观、记忆、说话哲学永远不变。
+`;
+    const filePath = join(identitiesDir, `${key}.md`);
+    await writeFile(filePath, content, 'utf-8');
+    written.push({ key, path: filePath });
+  }
+
+  return written;
 }
 
 // CLI mode
@@ -448,11 +551,16 @@ if (summaryOnly) {
     await mkdir(skillDir, { recursive: true });
     const skillPath = join(skillDir, 'SKILL.md');
     await writeFile(skillPath, result.content, 'utf-8');
+
+    // Generate separate identity files
+    const identityFiles = await generateIdentityFiles(slug, result.profile);
+
     console.log(JSON.stringify({
       status: 'ok',
       skill_path: skillPath,
       name: result.name,
       slug: result.slug,
+      identity_files: identityFiles.map(f => f.path),
     }, null, 2));
   }).catch(e => {
     console.error(e.message);
@@ -460,4 +568,4 @@ if (summaryOnly) {
   });
 }
 
-export { generateSkill, generateSummary, getTopMemories };
+export { generateSkill, generateSummary, getTopMemories, generateIdentityFiles };
