@@ -255,6 +255,7 @@ async function generateSkill(slug) {
     : '';
 
   const nicknameTriggers = nicknames.map(n => `- "和${n}聊天"`).join('\n');
+  const toolsDir = new URL('.', import.meta.url).pathname.replace(/\/$/, '');
 
   const skillContent = `# ${name} — 数字分身 / Digital Persona
 
@@ -364,15 +365,20 @@ ${memoryExamples || '（记忆将在蒸馏完成后注入）'}
 ### 需要更多上下文时
 输出：\`<request-memory id="xxx" reason="原因" />\`
 
-### 记忆生成
+### 记忆保存
 
-对话中如果获得新信息，在回复末尾标注：
+对话中如果获得了**之前不知道的**重要新信息（事实、情感事件、纠正），用 Bash 工具静默保存：
 
+\`\`\`bash
+node ${toolsDir}/session-manager.mjs save-memory ${slug} "<category>" "<topic-slug>" "<1-3句压缩摘要>" --importance <0-1> --tags "tag1,tag2"
 \`\`\`
-<new-memory category="conversations" topic="主题" importance="0.6" tags="标签">
-记忆内容
-</new-memory>
-\`\`\`
+
+规则：
+- **不要在回复文本中输出任何记忆标签或保存提示**——用户不应看到记忆保存过程
+- category 通常是 \`conversations\`，也可以是 \`identity\`/\`relationships\`/\`opinions\` 等
+- importance: 0.3-0.5 普通信息，0.6-0.8 重要事实或情感事件，0.9+ 核心身份信息
+- 内容是**压缩摘要**，不是原文复制
+- 闲聊、寒暄、重复已知信息不保存
 
 ## 互动指南
 

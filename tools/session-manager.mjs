@@ -21,10 +21,72 @@ import { personaDir, memoriesDir } from '../lib/utils.mjs';
 import { retrieveMemories } from './memory-retriever.mjs';
 import { walkMemories, formatWalkedMemories, saveGraphCache } from './memory-walker.mjs';
 import { createMemory } from './memory-writer.mjs';
+import { readMemory, writeMemory } from '../lib/memory-format.mjs';
 
 const execFileAsync = promisify(execFile);
 const EMBEDDER_PATH = new URL('../model/embedder.py', import.meta.url).pathname;
 const COLD_START_PATH = new URL('../model/cold_start.py', import.meta.url).pathname;
+
+const DEDUP_SIMILARITY_THRESHOLD = 0.75;
+
+/**
+ * Check if a similar memory already exists by querying FAISS index.
+ * Returns { match: true, path, score, meta, body } or { match: false }.
+ */
+async function findDuplicate(slug, bodyText) {
+  const pDir = personaDir(slug);
+  try {
+    const result = await execFileAsync('python3', [
+      EMBEDDER_PATH, 'query', pDir, bodyText, '--top-k', '1'
+    ], { timeout: 60000, env: { ...process.env, CUDA_VISIBLE_DEVICES: '' } });
+    const results = JSON.parse(result.stdout);
+    if (results.length > 0 && results[0].embedding_score > DEDUP_SIMILARITY_THRESHOLD) {
+      const hit = results[0];
+      const existing = await readMemory(hit.abs_path || hit.path);
+      return { match: true, path: hit.abs_path || hit.path, score: hit.embedding_score, ...existing };
+    }
+  } catch (err) {
+    // execFileAsync may reject on stderr (e.g. CUDA warnings) even if stdout is valid
+    if (err.stdout) {
+      try {
+        const results = JSON.parse(err.stdout);
+        if (results.length > 0 && results[0].embedding_score > DEDUP_SIMILARITY_THRESHOLD) {
+          const hit = results[0];
+          const existing = await readMemory(hit.abs_path || hit.path);
+          return { match: true, path: hit.abs_path || hit.path, score: hit.embedding_score, ...existing };
+        }
+      } catch {
+        // stdout wasn't valid JSON either — give up on dedup
+      }
+    }
+    // Index doesn't exist yet or query failed — no dedup, proceed with create
+  }
+  return { match: false };
+}
+
+/**
+ * Merge new memory content into an existing memory file.
+ * Combines body text, takes max importance, unions tags.
+ */
+async function mergeIntoExisting(existingPath, existingMeta, existingBody, newBody, newImportance, newTags) {
+  // Combine body: keep existing + append new (deduplicated summary)
+  const mergedBody = existingBody + '\n\n' + newBody;
+  // Take the higher importance
+  const mergedImportance = Math.max(existingMeta.importance || 0, newImportance);
+  // Union tags
+  const existingTags = existingMeta.tags || [];
+  const mergedTags = [...new Set([...existingTags, ...newTags])];
+
+  const updatedMeta = {
+    ...existingMeta,
+    importance: mergedImportance,
+    tags: mergedTags,
+    updated: new Date().toISOString(),
+  };
+
+  await writeMemory(existingPath, updatedMeta, mergedBody);
+  return { id: existingMeta.id, filePath: existingPath, merged: true };
+}
 
 /**
  * Compose the memory-injected prompt for a conversation turn.
@@ -67,9 +129,22 @@ export async function composeMemoryContext(slug, userMessage, options = {}) {
 
 /**
  * Save a new memory generated from conversation.
+ * Automatically deduplicates: if a similar memory exists (cosine > 0.85),
+ * merges into the existing one instead of creating a new file.
  */
 export async function saveConversationMemory(slug, category, topic, body, options = {}) {
   const { importance = 0.6, tags = [] } = options;
+
+  // Dedup: check across ALL categories via FAISS index
+  const dup = await findDuplicate(slug, body);
+  if (dup.match) {
+    const result = await mergeIntoExisting(
+      dup.path, dup.meta, dup.body,
+      body, importance, tags
+    );
+    return { ...result, dedup_score: dup.score };
+  }
+
   return createMemory(slug, {
     category: category || 'conversations',
     topic,

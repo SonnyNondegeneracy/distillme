@@ -23,8 +23,9 @@ _model_name = 'paraphrase-multilingual-MiniLM-L12-v2'
 def get_model():
     global _model
     if _model is None:
+        os.environ.setdefault('CUDA_VISIBLE_DEVICES', '')  # Default to CPU to avoid CUDA init hang
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer(_model_name)
+        _model = SentenceTransformer(_model_name, device='cpu')
     return _model
 
 
