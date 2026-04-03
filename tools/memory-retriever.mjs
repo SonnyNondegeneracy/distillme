@@ -21,6 +21,80 @@ const EMBEDDER_PATH = new URL('../model/embedder.py', import.meta.url).pathname;
 const LINKER_PATH = new URL('../model/linker.py', import.meta.url).pathname;
 
 /**
+ * Extract meaningful keywords from a query string.
+ * For Chinese: extract 3+ char substrings from CJK runs (2-char is too noisy).
+ * For non-Chinese: extract words of 3+ characters.
+ * Returns an array of keyword strings, longest first.
+ */
+function extractKeywords(query) {
+  const keywords = [];
+  // CJK character runs of length >= 2
+  const cjkRuns = query.match(/[\u4e00-\u9fff\u3400-\u4dbf]{2,}/g) || [];
+  for (const run of cjkRuns) {
+    // Keep full run
+    keywords.push(run);
+    // Extract 3-char and 4-char subsequences (skip 2-char, too noisy)
+    if (run.length > 4) {
+      for (let len = 3; len <= Math.min(4, run.length); len++) {
+        for (let i = 0; i <= run.length - len; i++) {
+          keywords.push(run.slice(i, i + len));
+        }
+      }
+    }
+  }
+  // Non-CJK words (English, etc.) — 3+ chars to avoid noise
+  const words = query.toLowerCase().match(/[a-zA-Z]{3,}/g) || [];
+  keywords.push(...words);
+  // Deduplicate, longest first (longer = more specific = more valuable)
+  return [...new Set(keywords)].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Keyword search across all indexed memories via index_meta.json.
+ * Runs in parallel with FAISS — ensures keyword-matching memories
+ * are always in the candidate pool even if embedding similarity is low.
+ *
+ * @param {string} slug - Persona slug
+ * @param {string} query - User query
+ * @param {number} maxResults - Max keyword hits to return
+ * @returns {Array} Memories with keyword_hits count
+ */
+async function keywordSearch(slug, query, maxResults = 20) {
+  const pDir = personaDir(slug);
+  const metaPath = join(pDir, 'index_meta.json');
+
+  let metas;
+  try {
+    metas = JSON.parse(await readFile(metaPath, 'utf-8'));
+  } catch {
+    return [];
+  }
+
+  const keywords = extractKeywords(query);
+  if (keywords.length === 0) return [];
+
+  const scored = [];
+  for (const m of metas) {
+    const text = (m.body_preview || '') + ' ' + (m.tags || []).join(' ') + ' ' + (m.id || '');
+    let hits = 0;
+    let longestMatch = 0;
+    for (const kw of keywords) {
+      if (text.includes(kw)) {
+        hits++;
+        longestMatch = Math.max(longestMatch, kw.length);
+      }
+    }
+    if (hits > 0) {
+      scored.push({ ...m, keyword_hits: hits, longest_keyword: longestMatch });
+    }
+  }
+
+  // Sort by longest match first (prefer exact term hits), then by hit count
+  scored.sort((a, b) => b.longest_keyword - a.longest_keyword || b.keyword_hits - a.keyword_hits);
+  return scored.slice(0, maxResults);
+}
+
+/**
  * Heuristic scoring function.
  *
  * @param {Object} candidate - From FAISS query result
@@ -30,19 +104,22 @@ const LINKER_PATH = new URL('../model/linker.py', import.meta.url).pathname;
  */
 function heuristicScore(candidate, query, phase = 'middle') {
   const embScore = candidate.embedding_score || 0;
-  const importance = candidate.importance || 0.5;
+  // Normalize importance: some memories use 0-10 scale, some use 0-1
+  const rawImportance = candidate.importance || 0.5;
+  const importance = rawImportance > 1 ? rawImportance / 10 : rawImportance;
 
-  // BM25-like keyword overlap (simplified)
-  const queryTokens = new Set(query.toLowerCase().split(/\s+/));
-  const bodyTokens = (candidate.body_preview || '').toLowerCase().split(/\s+/);
-  const tagTokens = (candidate.tags || []).map(t => t.toLowerCase());
-  let keywordHits = 0;
-  for (const token of queryTokens) {
-    if (token.length < 2) continue;
-    if (bodyTokens.some(bt => bt.includes(token))) keywordHits++;
-    if (tagTokens.some(tt => tt.includes(token))) keywordHits += 0.5;
+  // Keyword overlap — works for both Chinese (substring) and English (word)
+  // Longer keyword matches are weighted more (a 4-char match is worth more than a 3-char)
+  const keywords = extractKeywords(query);
+  const searchText = (candidate.body_preview || '') + ' ' + (candidate.tags || []).join(' ');
+  let keywordScore = 0;
+  let totalWeight = 0;
+  for (const kw of keywords) {
+    const weight = kw.length; // longer keywords matter more
+    totalWeight += weight;
+    if (searchText.includes(kw)) keywordScore += weight;
   }
-  const bm25Score = Math.min(keywordHits / Math.max(queryTokens.size, 1), 1.0);
+  const bm25Score = totalWeight > 0 ? Math.min(keywordScore / totalWeight, 1.0) : 0;
 
   // Recency score: power-law decay (long tail for old but important memories)
   let recencyScore = 0.5;
@@ -139,19 +216,33 @@ export async function retrieveMemories(slug, query, { topK = 8, phase = 'middle'
   const pDir = personaDir(slug);
   const faissK = 50; // Fetch more for heuristic re-scoring
 
-  // Step 1: FAISS query
-  let candidates;
-  try {
-    const { stdout } = await execFileAsync('python3', [
-      EMBEDDER_PATH, 'query', pDir, query, '--top-k', String(faissK),
-    ], { timeout: 60000 });
-    candidates = JSON.parse(stdout);
-  } catch (err) {
-    console.error('FAISS query failed:', err.message);
-    return [];
-  }
+  // Step 1: FAISS query + keyword search in parallel
+  let faissResults = [];
+  let kwResults = [];
 
-  if (!candidates.length) return [];
+  const [faissOutcome, kwOutcome] = await Promise.allSettled([
+    execFileAsync('python3', [
+      EMBEDDER_PATH, 'query', pDir, query, '--top-k', String(faissK),
+    ], { timeout: 60000 }).then(r => JSON.parse(r.stdout)),
+    keywordSearch(slug, query, 20),
+  ]);
+
+  if (faissOutcome.status === 'fulfilled') faissResults = faissOutcome.value;
+  if (kwOutcome.status === 'fulfilled') kwResults = kwOutcome.value;
+
+  if (!faissResults.length && !kwResults.length) return [];
+
+  // Merge: FAISS results + keyword-only hits (avoid duplicates)
+  const seenIds = new Set(faissResults.map(c => c.id));
+  const candidates = [...faissResults];
+  for (const kw of kwResults) {
+    if (!seenIds.has(kw.id)) {
+      // Keyword-matched but not in FAISS top-50 — inject with a baseline embedding score
+      kw.embedding_score = kw.embedding_score || 0.3;
+      candidates.push(kw);
+      seenIds.add(kw.id);
+    }
+  }
 
   // Step 2: Heuristic scoring
   for (const c of candidates) {
