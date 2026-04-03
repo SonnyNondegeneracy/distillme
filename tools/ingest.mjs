@@ -86,10 +86,9 @@ async function init(slug) {
     slug,
     created: new Date().toISOString(),
     retrieval: {
-      top_k: 8,
+      seedK: 5,
       faiss_candidates: 50,
-      walk_max_nodes: 5,
-      walk_min_strength: 0.3,
+      walk_min_strength: 0.15,
       token_budget: 2000,
     },
     model: {

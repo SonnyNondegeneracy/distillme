@@ -6,7 +6,7 @@
  * Returns top-K memories for a given query.
  *
  * Usage (CLI):
- *   node memory-retriever.mjs <persona-slug> "<query>" [--top-k 8] [--phase start|middle|deep]
+ *   node memory-retriever.mjs <persona-slug> "<query>" [--top-k 5] [--phase start|middle|deep]
  */
 
 import { readFile, access } from 'fs/promises';
@@ -184,7 +184,7 @@ export async function retrieveMemories(slug, query, { seedK = 5, topK, phase = '
   const faissK = 50; // Fetch more for heuristic re-scoring
 
   // Support legacy topK parameter (treat as seedK for backwards compat)
-  if (topK && !arguments[2]?.seedK) seedK = Math.min(topK, 8);
+  if (topK && !arguments[2]?.seedK) seedK = Math.min(topK, 5);
 
   // Step 1: FAISS query + keyword search in parallel
   let faissResults = [];
@@ -268,13 +268,13 @@ export async function retrieveMemories(slug, query, { seedK = 5, topK, phase = '
 if (process.argv[1] && process.argv[1].endsWith('memory-retriever.mjs')) {
   const args = process.argv.slice(2);
   if (args.length < 2) {
-    console.log('Usage: node memory-retriever.mjs <slug> "<query>" [--top-k 8] [--phase start|middle|deep]');
+    console.log('Usage: node memory-retriever.mjs <slug> "<query>" [--top-k 5] [--phase start|middle|deep]');
     process.exit(1);
   }
 
   const slug = args[0];
   const query = args[1];
-  let topK = 8;
+  let topK = 5;
   let phase = 'middle';
   for (let i = 2; i < args.length; i++) {
     if (args[i] === '--top-k' && args[i + 1]) topK = parseInt(args[++i]);

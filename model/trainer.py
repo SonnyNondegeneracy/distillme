@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """
+DEPRECATED — replaced by train_linker.py in v1.2.0.
+
+This file is kept for reference only. Use train_linker.py instead:
+  python train_linker.py <persona_dir> [--epochs 20] [--lr 1e-3]
+  python train_linker.py <persona_dir> --info
+
+Original description:
 Online trainer for the MemoryLinker model.
 
 Reads training logs (positive/negative retrieval pairs) and trains
 the linker head in a few epochs. Designed to run at the end of each
 conversation session.
 
-Usage:
+Usage (DEPRECATED):
   python trainer.py train <persona_dir> [--epochs 3] [--lr 1e-4]
   python trainer.py status <persona_dir>
 """

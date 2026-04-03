@@ -414,7 +414,7 @@ python3 model/train_linker.py ~/.claude/distill_me/alice --epochs 20
 | `node tools/persona-editor.mjs user set-default <slug> <id\|none>` | Set/clear default conversation partner |
 | `node tools/persona-editor.mjs sync <slug>` | Manual full sync (index + SKILL) |
 | `node tools/memory-writer.mjs <slug> <category> <topic> --body "..." [--type T] [--importance N] [--tags "a,b"]` | Low-level: create memory file (no sync) |
-| `node tools/memory-retriever.mjs <slug> "<query>" [--top-k 8] [--phase start\|middle\|deep]` | Retrieve memories |
+| `node tools/memory-retriever.mjs <slug> "<query>" [--top-k 5] [--phase start\|middle\|deep]` | Retrieve memories |
 | `node tools/memory-walker.mjs <slug> --seeds "id1,id2" [--max-nodes 5] [--min-strength 0.15]` | Walk memory links |
 | `node tools/persona-generator.mjs <slug>` | Generate SKILL.md + identity files |
 | `node tools/persona-generator.mjs <slug> --summary` | Output personality summary |

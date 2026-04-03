@@ -7,7 +7,7 @@
  * within a token budget.
  *
  * Usage:
- *   node memory-walker.mjs <slug> --seeds "id1,id2,id3" [--max-nodes 5] [--min-strength 0.3] [--token-budget 800]
+ *   node memory-walker.mjs <slug> --seeds "id1,id2,id3" [--max-nodes 5] [--min-strength 0.15] [--token-budget 2000]
  */
 
 import { readdir, readFile, writeFile, stat } from 'fs/promises';
@@ -217,15 +217,15 @@ export function formatWalkedMemories(memories) {
 if (process.argv[1] && process.argv[1].endsWith('memory-walker.mjs')) {
   const args = process.argv.slice(2);
   if (args.length < 1) {
-    console.log('Usage: node memory-walker.mjs <slug> --seeds "id1,id2" [--max-nodes 5] [--min-strength 0.3] [--token-budget 800]');
+    console.log('Usage: node memory-walker.mjs <slug> --seeds "id1,id2" [--max-nodes 5] [--min-strength 0.15] [--token-budget 2000]');
     process.exit(1);
   }
 
   const slug = args[0];
   let seedIds = [];
   let maxNodes = 5;
-  let minStrength = 0.3;
-  let tokenBudget = 800;
+  let minStrength = 0.15;
+  let tokenBudget = 2000;
 
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--seeds' && args[i + 1]) seedIds = args[++i].split(',');

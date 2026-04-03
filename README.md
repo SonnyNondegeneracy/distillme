@@ -412,7 +412,7 @@ python3 model/train_linker.py ~/.claude/distill_me/xiaoming --epochs 20
 | `node tools/persona-editor.mjs user remove <slug> <id>` | 删除对话者 |
 | `node tools/persona-editor.mjs sync <slug>` | 手动全量同步（索引+SKILL） |
 | `node tools/memory-writer.mjs <slug> <category> <topic> --body "..." [--type T] [--importance N] [--tags "a,b"]` | 低层：创建记忆文件（不触发同步） |
-| `node tools/memory-retriever.mjs <slug> "<query>" [--top-k 8] [--phase start\|middle\|deep]` | 检索记忆 |
+| `node tools/memory-retriever.mjs <slug> "<query>" [--top-k 5] [--phase start\|middle\|deep]` | 检索记忆 |
 | `node tools/memory-walker.mjs <slug> --seeds "id1,id2" [--max-nodes 5] [--min-strength 0.15]` | 沿链路行走 |
 | `node tools/persona-generator.mjs <slug>` | 生成 SKILL.md + identity files |
 | `node tools/persona-generator.mjs <slug> --summary` | 输出人格摘要 |
