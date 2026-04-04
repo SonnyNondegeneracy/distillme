@@ -1,17 +1,33 @@
-# DistillMe — Distill Your Digital Persona
+<div align="center">
 
-Distill a lifelike, memory-rich, continuously learning digital persona from personal data.
+# DistillMe
+
+### A digital persona engine with memory, forgetting, and growth
+
+*"The hundredth message should sound just as much like you as the first."*
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
+[![Node.js 18+](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)](https://claude.ai/claude-code)
+
+[Quick Start](#quick-start) · [Core Concepts](#core-concepts) · [Tool Reference](#full-tool-reference) · [中文](README.md)
+
+</div>
+
+---
 
 ## What Is This
 
-DistillMe is a personal digital persona distillation system that runs on [Claude Code](https://claude.ai/claude-code). Give it a folder of personal data (chat logs, diaries, notes, etc.) and it will:
+Feed it your chat logs, diaries, and notes. It distills a digital persona with a **memory graph, natural forgetting, and continuous learning from conversations**.
 
-1. **Distill personality**: Extract character traits, communication style, values, and interests from text
-2. **Build a memory graph**: Extract discrete memories, store them in hierarchical folders, and interlink them into a walkable graph
-3. **Generate a conversational persona**: Produce a Claude Code Skill that chats like the real person
-4. **Keep learning**: Selectively extract new memories during conversations and online-train a small model to improve memory retrieval
+Stuffing a persona description into the system prompt is trivial — but what happens after ten messages? What about when memories pile up? How do you stay in-character at message #100?
 
----
+That's the problem DistillMe solves. Its core isn't a persona description — it's a complete **memory retrieval pipeline**:
+
+> FAISS O(log n) vector search → heuristic scoring → MLP re-ranking → memory graph walking → inject ~log₂(n) most relevant memories
+
+10K memories, retrieval < 200ms. Important memories retain 86% after 10 years; trivial details naturally fade. Every conversation implicitly trains a 410K-parameter model to make retrieval better over time.
 
 ## Quick Start
 
