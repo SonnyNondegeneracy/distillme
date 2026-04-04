@@ -30,6 +30,8 @@ That's the problem DistillMe solves. Its core isn't a persona description — it
 
 10K memories, retrieval < 200ms. Important memories retain 86% after 10 years; trivial details naturally fade. Every conversation implicitly trains a 410K-parameter model to make retrieval better over time.
 
+> **Want your digital twin to speak?** 👉 [DistillMe VTuber](https://github.com/SonnyNondegeneracy/distill-me-vtuber) — 3D avatar + voice cloning + livestream chat, a multimodal frontend built on DistillMe.
+
 ## Quick Start
 
 ### Prerequisites
@@ -660,12 +662,22 @@ Temporary data is automatically cleaned up after tests.
 
 DistillMe's goal goes beyond text chat. The memory graph + persona model architecture is modality-agnostic — the same retrieval pipeline can drive any output form.
 
+### Shipped: DistillMe VTuber
+
+**[DistillMe VTuber](https://github.com/SonnyNondegeneracy/distill-me-vtuber)** is the first multimodal application built on DistillMe — proving that the memory graph + persona model can drive output beyond text:
+
+- **3D Avatar**: VRM model + expression blending + lip sync + action system
+- **Voice Cloning**: CosyVoice TTS, speak in your own voice
+- **Livestream Chat**: Concurrent processing pipeline, AI auto-replies to every message in order
+- **One-Click Distillation**: Drag & drop materials, fully automated persona extraction → memory indexing → voice cloning
+
+The same four-layer retrieval pipeline, from text chat to VTuber livestream — still sounds like you after the thousandth message.
+
+### Next
+
 - **Voice**: Speech rhythm, intonation patterns, vocal habits
 - **Visual style**: Expression preferences, art style, visual storytelling
-- **Multimodal VTuber Skill**: Text + voice + Live2D/3D expression sync — a digital persona that doesn't just chat, but can stream
 - Cross-persona memory sharing
-
-The current version focuses on getting the text-layer memory system right — this is the foundation for everything multimodal that comes next.
 
 ## Limitations
 
