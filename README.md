@@ -4,12 +4,13 @@
 
 ### 有记忆、会遗忘、能生长的数字分身引擎
 
-*"第一百句和第一句一样像你。"*
+*"第一千句和第一句一样像你。"*
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
-[![Node.js 18+](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org)
-[![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)](https://claude.ai/claude-code)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org/)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-Skill-blueviolet)](https://claude.ai/code)
+[![AgentSkills](https://img.shields.io/badge/AgentSkills-Standard-green)](https://agentskills.io)
 
 [快速开始](#快速开始) · [核心概念](#核心概念) · [工具参考](#完整工具参考) · [English](README_EN.md)
 
@@ -21,7 +22,7 @@
 
 给它你的聊天记录、日记、笔记，它蒸馏出一个**有记忆图谱、会自然遗忘、能从对话中持续学习**的数字分身。
 
-把一段人设塞进 system prompt 谁都能做——但聊十句以后呢？记忆越来越多怎么办？怎么保证聊到第一百句还像你？
+把一段人设塞进 system prompt 谁都能做——但聊十句以后呢？记忆越来越多怎么办？怎么保证聊到第一千句还像你？
 
 DistillMe 解决的是这个问题。它的核心不是人设描述，而是一套完整的**记忆检索管线**：
 
@@ -412,6 +413,19 @@ node test/run-tests.mjs   # ~3-5 分钟
 ```
 
 验证：目录初始化 → 记忆写入 → FAISS 索引 → 冷启动 → 四层检索 → 对话管线 → 生命周期管理。
+
+---
+
+## Roadmap
+
+DistillMe 的目标不止于文字对话。记忆图谱 + 人格模型的架构是模态无关的——同一套记忆检索管线可以驱动任何输出形式。
+
+- **语音特征**：说话节奏、语调习惯、口头禅的声学特征
+- **视觉风格**：表情偏好、画风、视觉叙事习惯
+- **多模态 VTuber Skill**：文字 + 语音 + Live2D/3D 表情联动，让数字分身不只能聊天，还能直播
+- 跨 persona 记忆共享
+
+当前版本专注于把文字层的记忆系统做扎实——这是后续一切多模态能力的地基。
 
 ---
 

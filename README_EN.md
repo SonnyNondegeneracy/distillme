@@ -4,12 +4,13 @@
 
 ### A digital persona engine with memory, forgetting, and growth
 
-*"The hundredth message should sound just as much like you as the first."*
+*"The thousandth message should sound just as much like you as the first."*
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
-[![Node.js 18+](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org)
-[![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)](https://claude.ai/claude-code)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org/)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-Skill-blueviolet)](https://claude.ai/code)
+[![AgentSkills](https://img.shields.io/badge/AgentSkills-Standard-green)](https://agentskills.io)
 
 [Quick Start](#quick-start) · [Core Concepts](#core-concepts) · [Tool Reference](#full-tool-reference) · [中文](README.md)
 
@@ -21,7 +22,7 @@
 
 Feed it your chat logs, diaries, and notes. It distills a digital persona with a **memory graph, natural forgetting, and continuous learning from conversations**.
 
-Stuffing a persona description into the system prompt is trivial — but what happens after ten messages? What about when memories pile up? How do you stay in-character at message #100?
+Stuffing a persona description into the system prompt is trivial — but what happens after ten messages? What about when memories pile up? How do you stay in-character at message #1000?
 
 That's the problem DistillMe solves. Its core isn't a persona description — it's a complete **memory retrieval pipeline**:
 
@@ -654,6 +655,17 @@ The test suite creates a temporary persona and verifies:
 7. Lifecycle management → stats + decay pruning + long-tail decay math verification
 
 Temporary data is automatically cleaned up after tests.
+
+## Roadmap
+
+DistillMe's goal goes beyond text chat. The memory graph + persona model architecture is modality-agnostic — the same retrieval pipeline can drive any output form.
+
+- **Voice**: Speech rhythm, intonation patterns, vocal habits
+- **Visual style**: Expression preferences, art style, visual storytelling
+- **Multimodal VTuber Skill**: Text + voice + Live2D/3D expression sync — a digital persona that doesn't just chat, but can stream
+- Cross-persona memory sharing
+
+The current version focuses on getting the text-layer memory system right — this is the foundation for everything multimodal that comes next.
 
 ## Limitations
 
