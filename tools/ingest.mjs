@@ -161,7 +161,7 @@ async function saveIngestLog(slug, log) {
 async function diff(slug, dataFolder) {
   const log = await loadIngestLog(slug);
   const files = await scanDataFolder(dataFolder);
-  const allFiles = [...files.text, ...files.json, ...files.csv];
+  const allFiles = [...files.text, ...files.json, ...files.csv, ...files.image, ...files.other];
 
   const newFiles = [];
   const changedFiles = [];
@@ -169,7 +169,7 @@ async function diff(slug, dataFolder) {
 
   for (const filePath of allFiles) {
     const relPath = relative(resolve(dataFolder), resolve(filePath));
-    const content = await readFile(filePath, 'utf-8');
+    const content = await readFile(filePath);
     const hash = fileHash(content);
     const fstat = await stat(filePath);
 
@@ -201,11 +201,11 @@ async function diff(slug, dataFolder) {
 async function markDone(slug, dataFolder) {
   const log = await loadIngestLog(slug);
   const files = await scanDataFolder(dataFolder);
-  const allFiles = [...files.text, ...files.json, ...files.csv];
+  const allFiles = [...files.text, ...files.json, ...files.csv, ...files.image, ...files.other];
 
   for (const filePath of allFiles) {
     const relPath = relative(resolve(dataFolder), resolve(filePath));
-    const content = await readFile(filePath, 'utf-8');
+    const content = await readFile(filePath);
     const hash = fileHash(content);
     const fstat = await stat(filePath);
     log.files[relPath] = {
