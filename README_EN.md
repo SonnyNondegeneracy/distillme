@@ -30,7 +30,9 @@ That's the problem DistillMe solves. Its core isn't a persona description — it
 
 10K memories, retrieval < 200ms. Important memories retain 86% after 10 years; trivial details naturally fade. Every conversation implicitly trains a 410K-parameter model to make retrieval better over time.
 
-> **Want your digital twin to speak?** 👉 [DistillMe VTuber](https://github.com/SonnyNondegeneracy/distill-me-vtuber) — 3D avatar + voice cloning + livestream chat, a multimodal frontend built on DistillMe.
+> **Want your digital twin to speak?** 👉 [DistillMe VTuber](https://github.com/SonnyNondegeneracy/DistillMe-VTuber) — 3D avatar + voice cloning + livestream chat, a multimodal frontend built on DistillMe.
+>
+> **Want your digital twin to teach?** 👉 [DistillMe Teacher](https://github.com/SonnyNondegeneracy/distill-me-teacher) — Knowledge retrieval + LaTeX blackboard + lesson plans + voice lectures, an AI teaching system built on DistillMe.
 
 ## Quick Start
 
@@ -664,7 +666,7 @@ DistillMe's goal goes beyond text chat. The memory graph + persona model archite
 
 ### Shipped: DistillMe VTuber
 
-**[DistillMe VTuber](https://github.com/SonnyNondegeneracy/distill-me-vtuber)** is the first multimodal application built on DistillMe — proving that the memory graph + persona model can drive output beyond text:
+**[DistillMe VTuber](https://github.com/SonnyNondegeneracy/DistillMe-VTuber)** is the first multimodal application built on DistillMe — proving that the memory graph + persona model can drive output beyond text:
 
 - **3D Avatar**: VRM model + expression blending + lip sync + action system
 - **Voice Cloning**: CosyVoice TTS, speak in your own voice
@@ -672,6 +674,16 @@ DistillMe's goal goes beyond text chat. The memory graph + persona model archite
 - **One-Click Distillation**: Drag & drop materials, fully automated persona extraction → memory indexing → voice cloning
 
 The same four-layer retrieval pipeline, from text chat to VTuber livestream — still sounds like you after the thousandth message.
+
+### Shipped: DistillMe Teacher
+
+**[DistillMe Teacher](https://github.com/SonnyNondegeneracy/distill-me-teacher)** gives your digital twin teaching powers — the same retrieval pipeline drives knowledge-based Q&A and proactive lectures:
+
+- **Knowledge Retrieval**: Upload textbooks/notes, LLM distills them into structured knowledge memories with FAISS vector search
+- **LaTeX Blackboard**: Auto-compiled and rendered inline during conversation, pages flip in sync with TTS
+- **Lesson Plans**: LLM-generated structured teaching plans, AI proactively lectures step by step
+- **Student Personalization**: Auto-tracks student errors/preferences/mastery for adaptive teaching
+- **Teacher Style**: Configurable speaking style via style_profile.json, injected into the system prompt
 
 ### Next
 
