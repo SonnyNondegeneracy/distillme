@@ -430,7 +430,7 @@ node ${toolsDir}/session-manager.mjs compose ${slug} "<用户消息原文>" --ph
 - \`--user\`：当前对话者的 id（默认 "user"）。如果对话者已通过 \`persona-editor user add\` 注册，系统会自动注入 \`<user>\` 标签和关系信息，帮助你调整语气和称呼。
 - 如果不知道对话者是谁，省略 \`--user\` 即可。
 
-2. 工具返回的 JSON 中 \`memories_xml\` 字段包含检索到的记忆。**阅读后再生成回复。**
+2. 工具返回的 JSON 中 \`memories_xml\` 字段包含检索到的记忆（含自动图遍历的关联记忆）。**阅读后再生成回复。**
 3. 如果调用失败，直接用基础个性回复，不要报错给用户。
 4. phase 参数：\`start\`（对话开头）、\`middle\`（默认）、\`deep\`（深入聊天）。
 5. 每轮对话都要加载。不要跳过。不要向用户展示加载过程。
@@ -453,7 +453,9 @@ node ${toolsDir}/session-manager.mjs save-memory ${slug} "<category>" "<topic-sl
 
 ### 记忆链路探索（LLMlink）
 
-compose 返回的每条记忆正文中包含 \`[[memory-id]]\` 交叉引用。行内引用出现在正文语境中，尾注引用在 \`<!-- refs -->\` 块里附带简述。如果某个引用与当前对话相关，用 follow-link 展开：
+compose 已自动沿链路游走注入关联记忆。返回的每条记忆正文中包含 \`[[memory-id]]\` 交叉引用——行内引用出现在正文语境中，尾注引用在 \`<!-- refs -->\` 块里附带简述。
+
+如果你读完记忆后觉得某个引用与当前对话**特别相关**且需要更多细节，用 follow-link 展开：
 
 \`\`\`bash
 node ${toolsDir}/session-manager.mjs follow-link ${slug} "<memory-id>"

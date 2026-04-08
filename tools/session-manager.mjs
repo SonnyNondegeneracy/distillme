@@ -6,7 +6,7 @@
  * new memory extraction from AI responses, and training data logging.
  *
  * Usage:
- *   node session-manager.mjs compose <slug> "<user-message>" [--phase start|middle|deep] [--mode llmlink|auto]
+ *   node session-manager.mjs compose <slug> "<user-message>" [--phase start|middle|deep]
  *   node session-manager.mjs follow-link <slug> "<memory-id>"          # LLMlink: follow a memory link
  *   node session-manager.mjs update-links <slug> "<memory-id>" --add/--remove  # LLMlink: edit links
  *   node session-manager.mjs extract <slug> "<ai-response>"            # Parse <new-memory> tags from response
@@ -84,7 +84,7 @@ async function mergeIntoExisting(existingPath, existingMeta, existingBody, newBo
  * @returns {Object} { memories_xml, retrieved_ids, walked_ids }
  */
 export async function composeMemoryContext(slug, userMessage, options = {}) {
-  const { phase = 'middle', mode = 'llmlink' } = options;
+  const { phase = 'middle' } = options;
   let user = options.user || 'user';
 
   // Resolve user: explicit --user > config.default_user > "user"
@@ -116,35 +116,44 @@ export async function composeMemoryContext(slug, userMessage, options = {}) {
   // Step 2: Format retrieved memories as XML
   const seedIds = retrieved.map(m => m.id);
 
-  if (mode === 'llmlink') {
-    // LLMlink mode: body text already contains [[id]] cross-refs
-    const retrievedXml = retrieved.map(m => {
-      const category = (m.abs_path || '').split('/memories/')[1]?.split('/')[0] || m.type || 'semantic';
-      return `<memory id="${m.id}" category="${category}" importance="${m.importance || 0.5}" score="${m.final_score?.toFixed(3) || '0'}">\n${m.full_body || m.body_preview}\n</memory>`;
-    }).join('\n\n');
+  // Format seed memories as XML (body already contains [[id]] cross-refs)
+  const retrievedXml = retrieved.map(m => {
+    const category = (m.abs_path || '').split('/memories/')[1]?.split('/')[0] || m.type || 'semantic';
+    return `<memory id="${m.id}" category="${category}" importance="${m.importance || 0.5}" score="${m.final_score?.toFixed(3) || '0'}">\n${m.full_body || m.body_preview}\n</memory>`;
+  }).join('\n\n');
 
-    const allXml = [userContext, retrievedXml].filter(Boolean).join('\n\n');
-    return {
-      memories_xml: allXml,
-      retrieved_ids: seedIds,
-      walked_ids: [],
-      total_memories: retrieved.length,
-      mode: 'llmlink',
-      user,
-    };
+  // Step 3: LLMlink priority — count [[id]] refs in seed bodies.
+  // If seeds have enough cross-refs for the LLM to explore, skip heuristic walk.
+  // Otherwise, BFS fills the gap up to the expected walked count.
+  const n = totalMemories || seedIds.length;
+  const expectedWalked = Math.max(3, Math.ceil(Math.log2(n)));
+
+  // Count unique [[id]] refs across all seed bodies (excluding self-refs)
+  const refPattern = /\[\[([^\]]+)\]\]/g;
+  const seedIdSet = new Set(seedIds);
+  const refIds = new Set();
+  for (const m of retrieved) {
+    const body = m.full_body || m.body_preview || '';
+    for (const match of body.matchAll(refPattern)) {
+      const refId = match[1];
+      if (!seedIdSet.has(refId)) refIds.add(refId);
+    }
   }
 
-  // Auto mode: traditional automated BFS walk
-  const retrievedXml = retrieved.map(m =>
-    `<memory id="${m.id}" category="${(m.abs_path || '').split('/memories/')[1]?.split('/')[0] || m.type || 'semantic'}" importance="${m.importance || 0.5}" score="${m.final_score?.toFixed(3) || '0'}">\n${m.full_body || m.body_preview}\n</memory>`
-  ).join('\n\n');
+  let walkedXml = '';
+  let walkedIds = [];
 
-  // Step 3: Walk links from retrieved memories, depth scales as log(n)
-  const seedScores = new Map(retrieved.map(m => [m.id, m.final_score || 0.5]));
-  const walked = await walkMemories(slug, seedIds, seedScores, {
-    totalMemories,
-  });
-  const walkedXml = formatWalkedMemories(walked);
+  if (refIds.size < expectedWalked) {
+    // Not enough links for LLM to explore — heuristic BFS supplements the gap
+    const deficit = expectedWalked - refIds.size;
+    const seedScores = new Map(retrieved.map(m => [m.id, m.final_score || 0.5]));
+    const walked = await walkMemories(slug, seedIds, seedScores, {
+      totalMemories,
+      maxNodes: deficit,
+    });
+    walkedXml = formatWalkedMemories(walked);
+    walkedIds = walked.map(w => w.id);
+  }
 
   // Combine
   const allXml = [userContext, retrievedXml, walkedXml].filter(Boolean).join('\n\n');
@@ -152,8 +161,9 @@ export async function composeMemoryContext(slug, userMessage, options = {}) {
   return {
     memories_xml: allXml,
     retrieved_ids: seedIds,
-    walked_ids: walked.map(w => w.id),
-    total_memories: retrieved.length + walked.length,
+    walked_ids: walkedIds,
+    total_memories: retrieved.length + walkedIds.length,
+    available_refs: refIds.size,
     user,
   };
 }
@@ -435,12 +445,11 @@ if (process.argv[1] && process.argv[1].endsWith('session-manager.mjs')) {
   const args = process.argv.slice(2);
   if (args.length < 1) {
     console.log(`Usage:
-  node session-manager.mjs compose <slug> "<message>" [--phase start|middle|deep] [--user <id>] [--mode llmlink|auto]
+  node session-manager.mjs compose <slug> "<message>" [--phase start|middle|deep] [--user <id>]
   node session-manager.mjs follow-link <slug> "<memory-id>"
   node session-manager.mjs update-links <slug> "<memory-id>" --add '[...]' --remove '[...]'
   node session-manager.mjs extract <slug> "<ai-response>"
   node session-manager.mjs save-memory <slug> "<category>" "<topic>" "<body>" [--importance 0.6]
-  node session-manager.mjs log-feedback <slug> "<retrieved>" "<used>"
   node session-manager.mjs rebuild-index <slug>`);
     process.exit(1);
   }
@@ -452,13 +461,11 @@ if (process.argv[1] && process.argv[1].endsWith('session-manager.mjs')) {
     const message = args[2];
     let phase = 'middle';
     let user = 'user';
-    let mode = 'llmlink';
     for (let i = 3; i < args.length; i++) {
       if (args[i] === '--phase' && args[i + 1]) phase = args[++i];
       if (args[i] === '--user' && args[i + 1]) user = args[++i];
-      if (args[i] === '--mode' && args[i + 1]) mode = args[++i];
     }
-    composeMemoryContext(slug, message, { phase, user, mode }).then(r => {
+    composeMemoryContext(slug, message, { phase, user }).then(r => {
       console.log(JSON.stringify(r, null, 2));
     }).catch(e => {
       console.error(e.message);
