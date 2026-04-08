@@ -1,6 +1,6 @@
 {
   "name": "distill-me",
-  "version": "1.0.0",
+  "version": "1.3.0",
   "description": "Personal digital persona system with hierarchical memory and online learning",
   "type": "module",
   "dependencies": {

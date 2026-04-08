@@ -702,16 +702,20 @@ The same four-layer retrieval pipeline, from text chat to VTuber livestream — 
 
 ## Version
 
+- **v1.3.0** (2026-04-08): LLMlink — LLM-driven memory graph traversal
+  - Removed MLP neural network reranking; 3-layer pipeline: FAISS → heuristic → LLMlink
+  - LLMlink priority: if seed `[[id]]` refs ≥ log₂(n), pure LLM exploration; otherwise heuristic BFS fills the deficit
+  - Memory bodies embed `[[id]]` cross-references (inline + `<!-- refs -->` endnotes), LLM explores via `follow-link`
+  - `update-links`: post-reply graph maintenance (replaces log-feedback training data collection)
+  - `generate-titles.mjs`: batch LLM title generation for endnote labels
+  - MLP version preserved on `v1.2-mlp` branch
 - **v1.2.0** (2026-04-03/04): Embedding daemon + persona hot-update + adaptive retrieval
-  - Embedding daemon (`embed_daemon.py`): Unix socket resident process, eliminates ~13s/call Python cold start, compose latency drops from 79s to ~6s
-  - `persona-editor.mjs`: Unified profile + memory + user editing CLI with automatic cascade updates after each change
-  - Conversation partner identity: `user add/list/remove` to register partners, `compose --user <id>` injects identity info, affects tone and memory retrieval
-  - log(n) adaptive retrieval: seeds fixed at 5 + multi-level BFS walk depth log₂(n), total injected memories scale logarithmically with store size
-  - Incremental update: `ingest.mjs diff/mark-done` detects new/changed files via SHA-256 hash, `/distill-me update` for one-command update
-  - `train_linker.py`: Train linker MLP from feedback log (supports class-weighted BCE, early stopping)
-  - Linker compatible with new memories: input is embedding pairs not fixed IDs, new memories are immediately scorable without retraining
+  - Embedding daemon (`embed_daemon.py`): Unix socket resident process, compose latency 79s → ~6s
+  - `persona-editor.mjs`: Unified profile + memory + user editing CLI with automatic cascade updates
+  - Conversation partner identity: `compose --user <id>` injects identity info, affects tone and retrieval
+  - Incremental update: `ingest.mjs diff/mark-done` detects new/changed files via SHA-256 hash
   - Speaking style parameterization: `profile.speaking_style` controls length limits, decision tree, silence behaviors
-  - Identity system externalized: facet configs moved from inline SKILL.md to `identities/*.md` loaded on demand
+  - Identity system externalized: facet configs moved to `identities/*.md` loaded on demand
 - **v1.1.0** (2026-04-03): Identity system + speaking philosophy
   - Identity system: Each persona can define multiple social identities (PhD student, streamer, project leader, etc.), with support for inheritance (`variant_of`) and mixing (`mix_of`)
   - Speaking philosophy: Memories are subconscious, not scripts — injected memories shape behavior but are never recited; most irrelevant memories should be silently ignored
@@ -721,7 +725,7 @@ The same four-layer retrieval pipeline, from text chat to VTuber livestream — 
 - **v1.0.0** (2026-04-02): Initial release
   - Hierarchical folder memory system + link graph
   - FAISS HNSW O(log n) vector retrieval + O(1) graph cache
-  - 410K parameter online learning MLP
+  - 410K parameter MLP (moved to `v1.2-mlp` branch in v1.3)
   - Long-tail power-law decay (core memories retain 86%+ after 10 years)
   - Selective memory writing (compressed summaries, not raw text)
   - Memory lifecycle management (decay pruning + similarity merging)
