@@ -26,9 +26,9 @@ Stuffing a persona description into the system prompt is trivial — but what ha
 
 That's the problem DistillMe solves. Its core isn't a persona description — it's a complete **memory retrieval pipeline**:
 
-> FAISS O(log n) vector search → heuristic scoring → MLP re-ranking → memory graph walking → inject ~log₂(n) most relevant memories
+> FAISS O(log n) vector search → heuristic scoring → LLMlink graph exploration → inject the most relevant memories
 
-10K memories, retrieval < 200ms. Important memories retain 86% after 10 years; trivial details naturally fade. Every conversation implicitly trains a 410K-parameter model to make retrieval better over time.
+10K memories, retrieval < 200ms. Important memories retain 86% after 10 years; trivial details naturally fade. The LLM itself decides which memory links to follow, maintaining the graph as it goes.
 
 > **Want your digital twin to speak?** 👉 [DistillMe VTuber](https://github.com/SonnyNondegeneracy/DistillMe-VTuber) — 3D avatar + voice cloning + livestream chat, a multimodal frontend built on DistillMe.
 >
@@ -232,27 +232,25 @@ links:                      # Related memories — forms a walkable graph
   - id: "rel-family-mom-001"
     relation: "involves"    # involves | evokes | temporal-near | co-entity | related
     strength: 0.9
+    path: "relationships/family-mom.md"
   - id: "emo-happiness-001"
     relation: "evokes"
     strength: 0.7
+    path: "emotional/happiness-001.md"
 ---
 
 Went to Yunnan with the whole family in summer 2024. Stayed a week in Dali.
-The sunset over Erhai Lake was beautiful. Mom took so many photos.
+The sunset over Erhai Lake was beautiful. Mom[[rel-family-mom-001]] took so many photos.
+
+<!-- refs -->
+evokes: happiness from being with family [[emo-happiness-001]]
 ```
 
-**Key design**: Memories are not isolated files. The `links` field connects them into a **memory graph**. During retrieval, the system can "walk" along links to find semantically related memories that share no keywords.
+**Key design**: Memories contain `[[memory-id]]` cross-references in two forms: **inline** (embedded in body text, context is the surrounding sentence) and **endnotes** (appended at the end with a brief relationship note). The LLM reads naturally and sees the pointers — no separate metadata needed. Refs are batch-generated during ingestion and incrementally added during conversations via `update-links` (endnote or inline mode). Different link chains can be followed in parallel.
 
-### Memory Retrieval: Four-Layer Pipeline + log(n) Adaptive Scaling
+### Memory Retrieval: Three-Layer Pipeline + LLMlink Graph Exploration
 
-The total number of injected memories scales **logarithmically** with memory store size: seeds (fixed 5) + walk (~log₂(n)).
-
-| Memory store size n | log₂(n) | seeds | walk | total injected |
-|---------------------|---------|-------|------|----------------|
-| 50 | 6 | 5 | ~6 | ~11 |
-| 200 | 8 | 5 | ~8 | ~13 |
-| 1000 | 10 | 5 | ~10 | ~15 |
-| 10000 | 14 | 5 | ~14 | ~19 |
+Instead of stuffing all memories into the prompt, DistillMe retrieves a small set of seed memories and lets the LLM itself decide whether to explore further along memory links.
 
 ```
 User message: "Do you remember traveling with your mom?"
@@ -276,18 +274,12 @@ User message: "Do you remember traveling with your mom?"
                  │
                  ▼
   ┌──────────────────────────────────────┐
-  │ Layer 3: Model Re-ranking (post-train)│
-  │ 410K MLP re-ranks top-50              │
-  │ Falls back to heuristic on cold start │
-  └──────────────┬───────────────────────┘
-                 │
-                 ▼
-  ┌──────────────────────────────────────┐
-  │ Layer 4: Multi-Level Link Walking     │
-  │ From 5 seeds, BFS depth = log₂(n)    │
-  │ Score decays multiplicatively per hop │
-  │ Softmax sampling ~log₂(n) memories   │
-  │ Token budget ~2000                    │
+  │ Layer 3: LLMlink Graph Exploration    │
+  │ Each seed carries <links> metadata    │
+  │ LLM calls follow-link tool to traverse│
+  │ the graph based on conversational     │
+  │ relevance, unlimited depth             │
+  │ Up to 3 link edits per memory batch   │
   └──────────────┬───────────────────────┘
                  │
                  ▼
@@ -295,7 +287,9 @@ User message: "Do you remember traveling with your mom?"
          Fed to Claude for response generation
 ```
 
-**Why log(n)**: Walk depth log₂(n) ensures any node in the graph is theoretically reachable (like a small-world network). More memories means more injection, but growth is slow — context never explodes.
+**Priority chain**: LLMlink (default, interactive) → heuristic BFS (fallback, non-interactive)
+
+**Why LLMlink**: Automated BFS is blind to conversational context — it expands topologically. LLMlink lets the LLM use its semantic understanding to choose which links are worth following, the same way a person naturally associates relevant experiences when recalling memories, rather than exhaustively traversing a graph. Reference: COLING 2025 "LLMlink: Dual LLM Memorisation and Optimisation".
 
 ### Conversational Memory Writing
 
@@ -382,29 +376,34 @@ Example output:
 }
 ```
 
-### Online Learning Model
+### LLMlink: LLM-Driven Graph Traversal
 
-A ~410K parameter MLP that learns "which memories are most useful for the current conversation":
+Memory body text contains `[[memory-id]]` cross-references in two forms:
+- **Inline**: `探索未知[[id-math-as-language-001]]、拒绝平庸` — context IS the description
+- **Endnotes**: `联想：我是连续性 [[id-continuity-and-conflict-001]]` — brief note explains the relationship
 
-```
-Conversation context → frozen MiniLM → 384d ─┐
-                                               ├─ [A; B; A*B; |A-B|] → MLP → score
-Candidate memory     → frozen MiniLM → 384d ─┘
-```
-
-- **Backbone**: `paraphrase-multilingual-MiniLM-L12-v2` (frozen, bilingual EN/ZH)
-- **Trainable**: 3-layer MLP (1536→256→64→1), only 410K parameters
-- **Training signal**: Retrieved memories the user engaged with = positive; retrieved but conversation pivoted away = negative
-- **Cold start**: Weights initialized to approximate cosine similarity — never worse than heuristic
-- **Training time**: < 5 seconds per session, runs async after each conversation
+The LLM reads, decides which refs to follow, and can explore in parallel:
 
 ```bash
-# Check training data statistics
-python3 model/train_linker.py ~/.claude/distill_me/alice --info
+# Follow a cross-reference — returns body with its own [[refs]]
+node tools/session-manager.mjs follow-link <slug> "<memory-id>"
 
-# Manually trigger training (requires at least 20 feedback entries)
-python3 model/train_linker.py ~/.claude/distill_me/alice --epochs 20
+# After reading memories, add/remove up to 3 links per call
+# Endnote mode (default): appends "note [[id]]" to refs block
+node tools/session-manager.mjs update-links <slug> "<source-id>" \
+  --add '[{"id":"target","relation":"related","strength":0.6,"note":"brief relationship context"}]'
+
+# Inline mode: inserts [[id]] after anchor text in body
+node tools/session-manager.mjs update-links <slug> "<source-id>" \
+  --add '[{"id":"target","relation":"related","strength":0.6,"anchor":"text in body to insert after"}]'
+
+# Remove: strips [[id]] from body + removes YAML link
+node tools/session-manager.mjs update-links <slug> "<source-id>" --remove '["stale-id"]'
 ```
+
+- **Refs grow organically**: cold_start generates initial endnotes, conversations add inline or endnote refs
+- **Parallel traversal**: different link chains can be followed concurrently
+- **Fallback**: in non-interactive contexts, heuristic scores alone drive retrieval
 
 ---
 
@@ -439,7 +438,9 @@ python3 model/train_linker.py ~/.claude/distill_me/alice --epochs 20
 | `node tools/memory-walker.mjs <slug> --seeds "id1,id2" [--max-nodes 5] [--min-strength 0.15]` | Walk memory links |
 | `node tools/persona-generator.mjs <slug>` | Generate SKILL.md + identity files |
 | `node tools/persona-generator.mjs <slug> --summary` | Output personality summary |
-| `node tools/session-manager.mjs compose <slug> "<msg>" [--phase P] [--user <id>]` | Compose memory-injected prompt (with user identity) |
+| `node tools/session-manager.mjs compose <slug> "<msg>" [--phase P] [--user <id>] [--mode llmlink\|auto]` | Compose memory-injected prompt (LLMlink default) |
+| `node tools/session-manager.mjs follow-link <slug> "<memory-id>"` | LLMlink: read a linked memory + its outgoing links |
+| `node tools/session-manager.mjs update-links <slug> "<memory-id>" --add '[...]' --remove '[...]'` | LLMlink: add/remove up to 3 links per call |
 | `node tools/session-manager.mjs extract <slug> "<response>"` | Extract `<new-memory>` from AI response |
 | `node tools/session-manager.mjs save-memory <slug> <cat> <topic> "<body>"` | Save conversation memory |
 | `node tools/session-manager.mjs rebuild-index <slug>` | Rebuild FAISS index and links |

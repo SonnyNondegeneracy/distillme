@@ -6,11 +6,13 @@
  * new memory extraction from AI responses, and training data logging.
  *
  * Usage:
- *   node session-manager.mjs compose <slug> "<user-message>" [--phase start|middle|deep]
- *   node session-manager.mjs extract <slug> "<ai-response>"        # Parse <new-memory> tags from response
+ *   node session-manager.mjs compose <slug> "<user-message>" [--phase start|middle|deep] [--mode llmlink|auto]
+ *   node session-manager.mjs follow-link <slug> "<memory-id>"          # LLMlink: follow a memory link
+ *   node session-manager.mjs update-links <slug> "<memory-id>" --add/--remove  # LLMlink: edit links
+ *   node session-manager.mjs extract <slug> "<ai-response>"            # Parse <new-memory> tags from response
  *   node session-manager.mjs save-memory <slug> "<category>" "<topic>" "<body>" [--importance 0.6] [--tags "t1,t2"]
  *   node session-manager.mjs log-feedback <slug> "<retrieved-ids>" "<used-ids>"
- *   node session-manager.mjs rebuild-index <slug>                   # Rebuild FAISS after new memories
+ *   node session-manager.mjs rebuild-index <slug>                       # Rebuild FAISS after new memories
  */
 
 import { readFile, writeFile, appendFile, mkdir } from 'fs/promises';
@@ -21,7 +23,7 @@ import { personaDir, memoriesDir } from '../lib/utils.mjs';
 import { retrieveMemories } from './memory-retriever.mjs';
 import { walkMemories, formatWalkedMemories, saveGraphCache } from './memory-walker.mjs';
 import { createMemory } from './memory-writer.mjs';
-import { readMemory, writeMemory } from '../lib/memory-format.mjs';
+import { readMemory, writeMemory, addLink, removeLink } from '../lib/memory-format.mjs';
 import { queryIndex, invalidateCache } from '../model/embed-client.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -82,7 +84,7 @@ async function mergeIntoExisting(existingPath, existingMeta, existingBody, newBo
  * @returns {Object} { memories_xml, retrieved_ids, walked_ids }
  */
 export async function composeMemoryContext(slug, userMessage, options = {}) {
-  const { phase = 'middle' } = options;
+  const { phase = 'middle', mode = 'llmlink' } = options;
   let user = options.user || 'user';
 
   // Resolve user: explicit --user > config.default_user > "user"
@@ -112,12 +114,32 @@ export async function composeMemoryContext(slug, userMessage, options = {}) {
   const totalMemories = retrieved._totalMemories || retrieved.length;
 
   // Step 2: Format retrieved memories as XML
+  const seedIds = retrieved.map(m => m.id);
+
+  if (mode === 'llmlink') {
+    // LLMlink mode: body text already contains [[id]] cross-refs
+    const retrievedXml = retrieved.map(m => {
+      const category = (m.abs_path || '').split('/memories/')[1]?.split('/')[0] || m.type || 'semantic';
+      return `<memory id="${m.id}" category="${category}" importance="${m.importance || 0.5}" score="${m.final_score?.toFixed(3) || '0'}">\n${m.full_body || m.body_preview}\n</memory>`;
+    }).join('\n\n');
+
+    const allXml = [userContext, retrievedXml].filter(Boolean).join('\n\n');
+    return {
+      memories_xml: allXml,
+      retrieved_ids: seedIds,
+      walked_ids: [],
+      total_memories: retrieved.length,
+      mode: 'llmlink',
+      user,
+    };
+  }
+
+  // Auto mode: traditional automated BFS walk
   const retrievedXml = retrieved.map(m =>
     `<memory id="${m.id}" category="${(m.abs_path || '').split('/memories/')[1]?.split('/')[0] || m.type || 'semantic'}" importance="${m.importance || 0.5}" score="${m.final_score?.toFixed(3) || '0'}">\n${m.full_body || m.body_preview}\n</memory>`
   ).join('\n\n');
 
   // Step 3: Walk links from retrieved memories, depth scales as log(n)
-  const seedIds = retrieved.map(m => m.id);
   const seedScores = new Map(retrieved.map(m => [m.id, m.final_score || 0.5]));
   const walked = await walkMemories(slug, seedIds, seedScores, {
     totalMemories,
@@ -281,12 +303,141 @@ export async function rebuildIndex(slug) {
   return { index: indexResult, links: linksResult };
 }
 
+/**
+ * LLMlink: Follow a memory link by ID — returns the memory's content + its outgoing links.
+ * Used by the LLM during conversation to traverse the memory graph interactively.
+ */
+export async function followMemoryLink(slug, memoryId) {
+  const metaPath = join(personaDir(slug), 'index_meta.json');
+  let metas;
+  try {
+    metas = JSON.parse(await readFile(metaPath, 'utf-8'));
+  } catch {
+    return { error: 'No index_meta.json found. Run rebuild-index first.' };
+  }
+
+  const entry = metas.find(m => m.id === memoryId);
+  if (!entry) {
+    return { error: `Memory "${memoryId}" not found` };
+  }
+
+  try {
+    const { meta, body } = await readMemory(entry.abs_path);
+    const category = entry.path?.split('/')[0] || meta.type || 'unknown';
+    return {
+      id: memoryId,
+      category,
+      importance: meta.importance ?? 0.5,
+      body,
+    };
+  } catch (err) {
+    return { error: `Failed to read memory: ${err.message}` };
+  }
+}
+
+/**
+ * LLMlink: Update links on a memory — add or remove up to 3 links per call.
+ * Adds support two modes:
+ *   - Endnote (default): appends "note [[id]]" to the <!-- refs --> block
+ *   - Inline: inserts "[[id]]" after a specified anchor text in the body
+ *
+ * @param {string} slug - Persona slug
+ * @param {string} memoryId - Source memory ID
+ * @param {Array} adds - Links to add: [{id, relation, strength, note?, anchor?}]
+ *   - note: endnote context (e.g. "也喜欢甜食"), appended to refs block
+ *   - anchor: text to insert [[id]] after (inline mode)
+ *   - if neither, bare [[id]] appended to refs block
+ * @param {Array} removes - Link IDs to remove: [id, ...]
+ */
+export async function updateMemoryLinks(slug, memoryId, adds = [], removes = []) {
+  // Enforce max 3 operations per call
+  const totalOps = adds.length + removes.length;
+  if (totalOps > 3) {
+    return { error: `Max 3 link operations per call (got ${totalOps})` };
+  }
+
+  const metaPath = join(personaDir(slug), 'index_meta.json');
+  let metas;
+  try {
+    metas = JSON.parse(await readFile(metaPath, 'utf-8'));
+  } catch {
+    return { error: 'No index_meta.json found' };
+  }
+
+  const entry = metas.find(m => m.id === memoryId);
+  if (!entry) return { error: `Memory "${memoryId}" not found` };
+
+  // Build id→path map for resolving paths of added links
+  const idToPath = {};
+  for (const m of metas) {
+    if (m.id && m.path) idToPath[m.id] = m.path;
+  }
+
+  try {
+    const { meta, body } = await readMemory(entry.abs_path);
+    let updatedBody = body;
+    const marker = '<!-- refs -->';
+
+    // Remove links (from meta and from body — strip entire line containing [[id]])
+    const removed = [];
+    for (const rid of removes) {
+      if (removeLink(meta, rid)) {
+        removed.push(rid);
+        const escaped = rid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // Remove line containing [[id]] in refs block, or inline [[id]]
+        updatedBody = updatedBody
+          .replace(new RegExp(`^.*\\[\\[${escaped}\\]\\].*$`, 'gm'), '')
+          .replace(/\n{3,}/g, '\n\n');
+      }
+    }
+
+    // Add links
+    const added = [];
+    for (const add of adds) {
+      if (!add.id) continue;
+      const path = add.path || idToPath[add.id] || null;
+      addLink(meta, add.id, add.relation || 'related', add.strength ?? 0.5, path);
+      added.push(add.id);
+
+      // Skip if ref already in body
+      if (updatedBody.includes(`[[${add.id}]]`)) continue;
+
+      if (add.anchor) {
+        // Inline mode: insert [[id]] after anchor text
+        const anchorIdx = updatedBody.indexOf(add.anchor);
+        if (anchorIdx >= 0) {
+          const insertAt = anchorIdx + add.anchor.length;
+          updatedBody = updatedBody.slice(0, insertAt) + `[[${add.id}]]` + updatedBody.slice(insertAt);
+        }
+      } else {
+        // Endnote mode: append to refs block
+        const note = add.note || '';
+        const refLine = note ? `${note} [[${add.id}]]` : `另见 [[${add.id}]]`;
+        if (updatedBody.includes(marker)) {
+          updatedBody = updatedBody.trimEnd() + '\n' + refLine;
+        } else {
+          updatedBody = updatedBody.trimEnd() + `\n\n${marker}\n${refLine}`;
+        }
+      }
+    }
+
+    meta.updated = new Date().toISOString();
+    await writeMemory(entry.abs_path, meta, updatedBody);
+
+    return { ok: true, added, removed, total_links: (meta.links || []).length };
+  } catch (err) {
+    return { error: `Failed to update links: ${err.message}` };
+  }
+}
+
 // CLI mode
 if (process.argv[1] && process.argv[1].endsWith('session-manager.mjs')) {
   const args = process.argv.slice(2);
   if (args.length < 1) {
     console.log(`Usage:
-  node session-manager.mjs compose <slug> "<message>" [--phase start|middle|deep] [--user <id>]
+  node session-manager.mjs compose <slug> "<message>" [--phase start|middle|deep] [--user <id>] [--mode llmlink|auto]
+  node session-manager.mjs follow-link <slug> "<memory-id>"
+  node session-manager.mjs update-links <slug> "<memory-id>" --add '[...]' --remove '[...]'
   node session-manager.mjs extract <slug> "<ai-response>"
   node session-manager.mjs save-memory <slug> "<category>" "<topic>" "<body>" [--importance 0.6]
   node session-manager.mjs log-feedback <slug> "<retrieved>" "<used>"
@@ -301,11 +452,27 @@ if (process.argv[1] && process.argv[1].endsWith('session-manager.mjs')) {
     const message = args[2];
     let phase = 'middle';
     let user = 'user';
+    let mode = 'llmlink';
     for (let i = 3; i < args.length; i++) {
       if (args[i] === '--phase' && args[i + 1]) phase = args[++i];
       if (args[i] === '--user' && args[i + 1]) user = args[++i];
+      if (args[i] === '--mode' && args[i + 1]) mode = args[++i];
     }
-    composeMemoryContext(slug, message, { phase, user }).then(r => {
+    composeMemoryContext(slug, message, { phase, user, mode }).then(r => {
+      console.log(JSON.stringify(r, null, 2));
+    }).catch(e => {
+      console.error(e.message);
+      process.exit(1);
+    });
+
+  } else if (cmd === 'follow-link') {
+    const slug = args[1];
+    const memoryId = args[2];
+    if (!slug || !memoryId) {
+      console.error('Usage: node session-manager.mjs follow-link <slug> "<memory-id>"');
+      process.exit(1);
+    }
+    followMemoryLink(slug, memoryId).then(r => {
       console.log(JSON.stringify(r, null, 2));
     }).catch(e => {
       console.error(e.message);
@@ -344,6 +511,25 @@ if (process.argv[1] && process.argv[1].endsWith('session-manager.mjs')) {
       process.exit(1);
     }
     extractMemoriesFromResponse(slug, responseText).then(r => {
+      console.log(JSON.stringify(r, null, 2));
+    }).catch(e => {
+      console.error(e.message);
+      process.exit(1);
+    });
+
+  } else if (cmd === 'update-links') {
+    const slug = args[1];
+    const memoryId = args[2];
+    if (!slug || !memoryId) {
+      console.error('Usage: node session-manager.mjs update-links <slug> "<memory-id>" --add \'[{"id":"x","relation":"y","strength":0.5,"description":"..."}]\' --remove \'["id1"]\' ');
+      process.exit(1);
+    }
+    let adds = [], removes = [];
+    for (let i = 3; i < args.length; i++) {
+      if (args[i] === '--add' && args[i + 1]) adds = JSON.parse(args[++i]);
+      if (args[i] === '--remove' && args[i + 1]) removes = JSON.parse(args[++i]);
+    }
+    updateMemoryLinks(slug, memoryId, adds, removes).then(r => {
       console.log(JSON.stringify(r, null, 2));
     }).catch(e => {
       console.error(e.message);

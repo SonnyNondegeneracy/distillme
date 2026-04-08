@@ -451,17 +451,45 @@ node ${toolsDir}/session-manager.mjs save-memory ${slug} "<category>" "<topic-sl
 - importance: 0.3-0.5 普通，0.6-0.8 重要，0.9+ 核心
 - 闲聊、寒暄、重复已知信息不保存
 
-### 反馈收集
+### 记忆链路探索（LLMlink）
 
-每次回复**之后**，静默记录你实际用了哪些记忆（用于改进检索模型）：
+compose 返回的每条记忆正文中包含 \`[[memory-id]]\` 交叉引用。行内引用出现在正文语境中，尾注引用在 \`<!-- refs -->\` 块里附带简述。如果某个引用与当前对话相关，用 follow-link 展开：
 
 \`\`\`bash
-node ${toolsDir}/session-manager.mjs log-feedback ${slug} "<所有检索到的记忆id，逗号分隔>" "<你实际用到的记忆id，逗号分隔>"
+node ${toolsDir}/session-manager.mjs follow-link ${slug} "<memory-id>"
 \`\`\`
 
-- 用户不应看到这个过程
-- "实际用到"指：影响了你的语气、立场、用词的记忆（即使没有明说）
-- 如果没有任何记忆影响了你的回复，used 留空字符串
+返回该记忆的完整正文（含它自己的引用）。可以继续沿引用探索，深度不限，不同链路可并行检索。只探索相关的，通常 1-3 次就够。
+
+#### 链路维护
+
+每批记忆后，如果发现新关联或旧链路过时，可以增删（每次最多 3 个操作）。两种插入模式：
+
+**尾注模式**（默认）——在 refs 块追加简述 + \`[[id]]\`：
+\`\`\`bash
+node ${toolsDir}/session-manager.mjs update-links ${slug} "<source-id>" --add '[{"id":"<target-id>","relation":"related","strength":0.5,"note":"一句话说明关联"}]'
+\`\`\`
+
+**行内模式**——在正文中锚点文本后插入 \`[[id]]\`：
+\`\`\`bash
+node ${toolsDir}/session-manager.mjs update-links ${slug} "<source-id>" --add '[{"id":"<target-id>","relation":"related","strength":0.5,"anchor":"正文中的锚点"}]'
+\`\`\`
+
+删除：\`--remove '["<old-id>"]'\`（同时清除正文中的引用）
+- 链路维护对用户透明
+
+### 回复后的图谱维护
+
+每次回复**之后**，回顾你实际用了哪些记忆、发现了哪些新关联，静默执行 \`update-links\`（最多 3 个操作）：
+
+**什么时候加链路：**
+- 你在回复中联想到两条记忆之间有关联，但它们之间还没有 \`[[ref]]\`
+- 用 \`anchor\` 在正文中相关位置插入行内引用，或用 \`note\` 加尾注
+
+**什么时候删链路：**
+- 一条链路完全不相关、是噪声
+
+**不需要每次都操作。**只在真正发现有价值的新关联时才做。用户不应看到这个过程。
 
 ## 说话规则（最重要的章节）
 

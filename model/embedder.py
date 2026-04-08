@@ -74,6 +74,7 @@ def build_index(memories_dir, output_dir):
             'importance': meta.get('importance', 0.5),
             'created': meta.get('created', ''),
             'tags': meta.get('tags', []),
+            'title': meta.get('title', ''),
             'body_preview': body[:200],
         })
 

@@ -131,6 +131,41 @@ def generate_links(persona_dir):
         for t in tokens:
             entity_to_metas.setdefault(t, set()).add(idx)
 
+    # Build id-to-relative-path map for LLMlink
+    id_to_path = {m['id']: m.get('path', '') for m in metas}
+
+    # Build id-to-title map: prefer YAML title, fall back to first phrase of body
+    def _fallback_label(preview):
+        if not preview:
+            return ''
+        preview = preview.lstrip('#').strip()
+        for p in ['。', '\n', '，', ',', '；', '!', '？', '——', '：']:
+            idx = preview.find(p)
+            if 0 < idx < 15:
+                return preview[:idx]
+        return preview[:12]
+
+    id_to_title = {}
+    for m in metas:
+        mid = m['id']
+        # Try to read title from memory file metadata
+        title = m.get('title', '')
+        if not title:
+            title = _fallback_label(m.get('body_preview', '') or '')
+        id_to_title[mid] = title
+
+    # Relation type → Chinese verb for natural endnotes
+    REL_VERB = {
+        'involves': '涉及',
+        'evokes': '联想',
+        'temporal-near': '同期',
+        'co-entity': '相关',
+        'connects': '关联',
+        'related': '另见',
+    }
+
+    REFS_MARKER = '<!-- refs -->'
+
     links_added = 0
 
     for i in range(n):
@@ -142,11 +177,24 @@ def generate_links(persona_dir):
         if not meta:
             continue
 
+        # Strip old refs block from body for idempotency
+        if REFS_MARKER in body:
+            body = body[:body.index(REFS_MARKER)].rstrip()
+
         existing_link_ids = set()
+        original_link_count = 0
         if meta.get('links'):
             existing_link_ids = {l['id'] for l in meta['links']}
+            original_link_count = len(meta['links'])
 
         new_links = list(meta.get('links', []))
+
+        # Enrich existing links with path if missing
+        for link in new_links:
+            if not link.get('path') and link['id'] in id_to_path and id_to_path[link['id']]:
+                link['path'] = id_to_path[link['id']]
+            # Remove description field (no longer used)
+            link.pop('description', None)
 
         # --- Method 1: Embedding similarity neighbors ---
         for j_idx in range(1, k):  # Skip index 0 (self)
@@ -177,6 +225,7 @@ def generate_links(persona_dir):
                 'id': neighbor_id,
                 'relation': relation,
                 'strength': round(sim_score, 3),
+                'path': id_to_path.get(neighbor_id, ''),
             })
             existing_link_ids.add(neighbor_id)
             links_added += 1
@@ -205,17 +254,43 @@ def generate_links(persona_dir):
                 'id': neighbor_id,
                 'relation': 'co-entity',
                 'strength': round(strength, 3),
+                'path': id_to_path.get(neighbor_id, ''),
             })
             existing_link_ids.add(neighbor_id)
             links_added += 1
 
-        # Write back if new links were added
-        if len(new_links) > len(meta.get('links', [])):
+        # Write back if links changed
+        links_changed = len(new_links) > original_link_count
+        # Also check if paths were added to existing links
+        if not links_changed:
+            for link in new_links:
+                if link.get('path') and link['id'] in existing_link_ids:
+                    links_changed = True
+                    break
+
+        # Always rebuild refs block in body from current links
+        # Top links by strength, formatted as contextual endnotes
+        top_refs = sorted(new_links, key=lambda l: l.get('strength', 0), reverse=True)[:8]
+        if top_refs:
+            ref_lines = []
+            for l in top_refs:
+                verb = REL_VERB.get(l.get('relation', 'related'), '另见')
+                label = id_to_title.get(l['id'], '')
+                if label:
+                    ref_lines.append(f'{verb}：{label} [[{l["id"]}]]')
+                else:
+                    ref_lines.append(f'{verb} [[{l["id"]}]]')
+            refs_block = '\n'.join(ref_lines)
+            new_body = body + f'\n\n{REFS_MARKER}\n{refs_block}'
+        else:
+            new_body = body
+
+        if links_changed or (REFS_MARKER not in (meta.get('_original_body') or body)):
             meta['links'] = new_links
             meta['updated'] = __import__('datetime').datetime.now().isoformat()
             yaml_str = yaml.safe_dump(meta, allow_unicode=True, default_flow_style=False).strip()
             with open(mem_path, 'w', encoding='utf-8') as f:
-                f.write(f"---\n{yaml_str}\n---\n\n{body}\n")
+                f.write(f"---\n{yaml_str}\n---\n\n{new_body}\n")
 
     print(json.dumps({
         "status": "ok",

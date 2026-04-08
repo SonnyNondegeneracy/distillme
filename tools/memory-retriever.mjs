@@ -9,11 +9,11 @@
  *   node memory-retriever.mjs <persona-slug> "<query>" [--top-k 5] [--phase start|middle|deep]
  */
 
-import { readFile, access } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { readMemory } from '../lib/memory-format.mjs';
 import { personaDir } from '../lib/utils.mjs';
-import { queryIndex, rerankCandidates } from '../model/embed-client.mjs';
+import { queryIndex } from '../model/embed-client.mjs';
 
 /**
  * Extract meaningful keywords from a query string.
@@ -145,26 +145,6 @@ function heuristicScore(candidate, query, phase = 'middle') {
 }
 
 /**
- * Try model re-ranking via daemon.
- * Returns null if model not available.
- */
-async function modelRerank(personaPath, query, candidateIds) {
-  const weightsPath = join(personaPath, 'model', 'linker_weights.pt');
-  try {
-    await access(weightsPath);
-  } catch {
-    return null; // No trained model yet
-  }
-
-  try {
-    const scores = await rerankCandidates(personaPath, query, candidateIds);
-    return scores && Object.keys(scores).length > 0 ? scores : null;
-  } catch {
-    return null; // Model failed, fall back to heuristic
-  }
-}
-
-/**
  * Main retrieval function.
  *
  * Retrieval scales with memory count:
@@ -220,22 +200,9 @@ export async function retrieveMemories(slug, query, { seedK = 5, topK, phase = '
     c.heuristic_score = heuristicScore(c, query, phase);
   }
 
-  // Step 3: Try model re-ranking
-  const modelScores = await modelRerank(pDir, query, candidates.map(c => c.id));
-  if (modelScores) {
-    for (const c of candidates) {
-      const ms = modelScores[c.id];
-      if (ms !== undefined) {
-        // Blend: 60% model, 40% heuristic
-        c.final_score = 0.6 * ms + 0.4 * c.heuristic_score;
-      } else {
-        c.final_score = c.heuristic_score;
-      }
-    }
-  } else {
-    for (const c of candidates) {
-      c.final_score = c.heuristic_score;
-    }
+  // Step 3: Final scoring (heuristic only; LLMlink handles deeper traversal)
+  for (const c of candidates) {
+    c.final_score = c.heuristic_score;
   }
 
   // Step 4: Select seeds — deterministic top by similarity
@@ -245,12 +212,25 @@ export async function retrieveMemories(slug, query, { seedK = 5, topK, phase = '
   const seeds = candidates.slice(0, actualSeedK);
 
   // Step 5: Load full memory content for seeds
+  // Also build id→path map for resolving link paths
+  let idToPath = {};
+  try {
+    const allMetas = JSON.parse(await readFile(join(pDir, 'index_meta.json'), 'utf-8'));
+    for (const m of allMetas) {
+      if (m.id && m.path) idToPath[m.id] = m.path;
+    }
+  } catch { /* no meta file */ }
+
   for (const result of seeds) {
     if (result.abs_path) {
       try {
         const mem = await readMemory(result.abs_path);
         result.full_body = mem.body;
-        result.links = mem.meta.links || [];
+        // Enrich links with relative paths for LLMlink
+        result.links = (mem.meta.links || []).map(l => ({
+          ...l,
+          path: l.path || idToPath[l.id] || null,
+        }));
       } catch {
         result.full_body = result.body_preview;
         result.links = [];
